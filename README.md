@@ -66,7 +66,6 @@ Plug in a controller and play; the game follows whichever controller you last to
 
 - If you die in skater mode, bodies pile up.
 - The skateboard is invisible on some maps.
-- In the Minecraft world, block edges aren't grind rails yet.
 
 ## Credits
 

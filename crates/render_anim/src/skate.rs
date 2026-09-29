@@ -78,17 +78,44 @@ const BLOCK_RADIUS: i32 = 40;
 const BLOCK_DEPTH: i32 = 20;
 const BLOCK_RECENTRE: f32 = 14.0;
 
-/// A Minecraft world's collision around map point `centre`, for Skate.
-fn block_collision(builder: &CollisionBuilder, centre: Vec3) -> Result<(PreparedCollision, usize), String> {
-    let triangles: Vec<[[f32; 3]; 3]> = sim::voxel::collision_triangles(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH)
-        .into_iter()
-        .map(|t| t.map(|p| collision::to_skate(Vec3::from_array(p)).to_array()))
-        .collect();
-    if triangles.is_empty() {
+/// A Minecraft world's collision around map point `centre`, for Skate. Its
+/// block edges become grind rails the same way any map's lips do: the same
+/// detector that walks MW2 collision walks the block faces it is handed.
+fn block_collision(
+    builder: &CollisionBuilder,
+    centre: Vec3,
+) -> Result<(PreparedCollision, usize), String> {
+    let map_triangles: Vec<[Vec3; 3]> =
+        sim::voxel::collision_triangles(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH)
+            .into_iter()
+            .map(|t| t.map(Vec3::from_array))
+            .collect();
+    if map_triangles.is_empty() {
         return Err("no blocks around the skater yet".into());
     }
+    let (found, census) = rails::find(&map_triangles);
+    diag::debug!(
+        World,
+        "Skate block rails: {} walkable edges, {} lips, {} runs, {} rails",
+        census.candidates,
+        census.lips,
+        census.runs,
+        census.rails,
+    );
+    let triangles: Vec<[[f32; 3]; 3]> = map_triangles
+        .iter()
+        .map(|t| t.map(|p| collision::to_skate(p).to_array()))
+        .collect();
+    let rails: Vec<Vec<[f32; 3]>> = found
+        .into_iter()
+        .map(|rail| {
+            rail.into_iter()
+                .map(|p| collision::to_skate(p).to_array())
+                .collect()
+        })
+        .collect();
     let n = triangles.len();
-    Ok((builder.build(triangles, Vec::new())?, n))
+    Ok((builder.build(triangles, rails)?, n))
 }
 
 /// One retained session per map. Leaving skating only pauses this worker;
