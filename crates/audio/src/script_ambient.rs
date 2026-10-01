@@ -52,7 +52,7 @@ pub(crate) fn update_script_ambient(
     mut commands: Commands,
     epoch: Res<crate::backend::MatchEpoch>,
     ready: Res<crate::AudioReady>,
-    loading: Option<Res<assets::LoadingScreen>>,
+    (loading, identity): (Option<Res<assets::LoadingScreen>>, Option<Res<frame::LaunchIdentity>>),
     presented: Option<Res<net::PresentedSnapshot>>,
     clock: AmbientClock,
     local: Res<net::LocalPresentClient>,
@@ -83,6 +83,13 @@ pub(crate) fn update_script_ambient(
         if retired {
             return;
         }
+    }
+    // A Minecraft world has no ambience of the map it stands in for.
+    if identity.is_some_and(|identity| assets::minecraft_map::is_minecraft_load(&identity.zone)) {
+        for (entity, _, _, _) in &voices {
+            commands.entity(entity).try_despawn();
+        }
+        return;
     }
     if !ready.0 || loading.is_some_and(|screen| !screen.is_complete()) {
         return;
