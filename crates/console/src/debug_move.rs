@@ -818,7 +818,7 @@ pub(crate) fn update_skate_overlay(mode:Res<frame::SkateMode>,mut hud:Query<(&mu
         *visibility=if mode.active || mode.entering || failed {Visibility::Visible}else{Visibility::Hidden};
         **text=if failed {format!("Skate unavailable: {}", mode.status)}
         else if mode.entering && !mode.preloaded {"Skate is finishing map preparation... | J: cancel".into()}
-        else if mode.controller.is_none() {"SKATE | Connect an Xbox / XInput controller | J: return to MW2".into()}
+        else if mode.controller.is_none() {"SKATE | Connect a controller | J: return to MW2".into()}
         else {"SKATE | Original controller controls | Start: pause | J: return to MW2".into()};
     }
 }

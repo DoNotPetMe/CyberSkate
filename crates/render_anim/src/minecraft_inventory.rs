@@ -244,7 +244,12 @@ impl InventoryUi {
                     self.cells.insert(id, cell);
                     self.dirty = true;
                 }
-                _ => {
+                Ok(None) => {
+                    diag::warn!(World, "Minecraft item icon: no model for `{id}`");
+                    self.failed.insert(id);
+                }
+                Err(error) => {
+                    diag::warn!(World, "Minecraft item icon for `{id}` failed: {error}");
                     self.failed.insert(id);
                 }
             }

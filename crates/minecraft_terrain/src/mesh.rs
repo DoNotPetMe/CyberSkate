@@ -1183,8 +1183,29 @@ fn variant_index(variants: &[(ResolvedModel, u32)], (x, y, z): BlockPos) -> usiz
 /// A face's corners as `FaceBakery.bakeVertex` places them: the element's
 /// own rotation about its origin, then the blockstate's.
 fn element_corners(element: &crate::model::Element, face: &str) -> Result<[[f32; 3]; 4]> {
-    Ok(corners(face, element.from, element.to)?.map(|corner| rotate_y(element.rotation.map_or(corner, |r| r.apply(corner)), element.rotation_y)))
+    let mut quad = corners(face, element.from, element.to)?;
+    // An unrotated sheet with no thickness (leaf litter, ladders, vines) has
+    // its two opposite faces in one plane, textured differently. The terrain is drawn without back-face
+    // culling, so both would fight for the same pixels; each is pushed a
+    // hair out along its own normal so the one facing the viewer wins.
+    let (axis, sign) = match face {
+        "down" => (1, -1.0),
+        "up" => (1, 1.0),
+        "north" => (2, -1.0),
+        "south" => (2, 1.0),
+        "west" => (0, -1.0),
+        _ => (0, 1.0),
+    };
+    if element.rotation.is_none() && element.from[axis] == element.to[axis] {
+        for corner in &mut quad {
+            corner[axis] += sign * SHEET_FACE_OFFSET;
+        }
+    }
+    Ok(quad.map(|corner| rotate_y(element.rotation.map_or(corner, |r| r.apply(corner)), element.rotation_y)))
 }
+
+/// Blocks; well under a pixel of a block, well over depth precision.
+const SHEET_FACE_OFFSET: f32 = 0.002;
 
 /// The baked quad's direction (`FaceBakery.calculateFacing`): the face's
 /// own, turned with the blockstate, or for a rotated element the direction

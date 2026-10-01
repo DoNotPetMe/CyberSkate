@@ -427,7 +427,11 @@ fn update(
                 host.ready = false;
                 mode.preloaded = false;
                 mode.preload_pending = false;
-                diag::warn!(World, "Skate stopped: {e}");
+                // The worker is gone; prepare a fresh session for this map
+                // so the player can skate again rather than for the rest of
+                // the match being left without one.
+                host.clip = None;
+                diag::warn!(World, "Skate stopped: {e}; preparing a new session");
                 mode.status = e;
                 return;
             }

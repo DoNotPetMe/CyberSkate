@@ -156,8 +156,15 @@ impl HudImages {
 
     /// An image made at run time, drawn under a material name of its own.
     pub fn insert_runtime(&mut self, name: &str, handle: Handle<Image>) {
-        self.by_name
-            .insert(iwd_key(HUD_CHROME_NAMESPACE, name, HudSampling::Color, None), Some(handle));
+        // Draw lists look images up by their native sampling, which is Data
+        // for any name the zone has not marked sRGB, so the image answers to
+        // both.
+        for sampling in [HudSampling::Color, HudSampling::Data] {
+            self.by_name.insert(
+                iwd_key(HUD_CHROME_NAMESPACE, name, sampling, None),
+                Some(handle.clone()),
+            );
+        }
     }
 
     pub fn set_games_root(&mut self, root: &Path) {
