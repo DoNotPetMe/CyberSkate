@@ -486,6 +486,7 @@ pub fn lower_sm3_to_wgsl(program: &Sm3ProgramIr) -> Result<Sm3Wgsl, Sm3WgslError
         &program.instructions,
         &plan.external,
         &plan.samplers,
+        &BTreeSet::new(),
         &mut defined,
         None,
     )?;
@@ -508,6 +509,12 @@ pub fn lower_pass_to_wgsl(
 ) -> Result<PassWgsl, Sm3WgslError> {
     let vertex_plan = plan_program(vertex)?;
     let pixel_plan = plan_program(pixel)?;
+    let compare: BTreeSet<u16> = abi
+        .samplers
+        .iter()
+        .filter(|slot| slot.depth_compare)
+        .map(|slot| slot.register)
+        .collect();
 
     let vertex_constant_len = constant_block_len(abi, &vertex_plan, Stage::Vertex)?;
     let pixel_constant_len = constant_block_len(abi, &pixel_plan, Stage::Pixel)?;
@@ -559,7 +566,11 @@ pub fn lower_pass_to_wgsl(
     write_texture_table_bindings(&mut source, abi);
     let slot_row_base = vertex_constant_len + pixel_constant_len;
 
-    source.push_str("\nstruct Sm3Varyings {\n    @builtin(position) position: vec4<f32>,\n");
+    // Depth-equal passes need identical position evaluation across pipelines,
+    // including the passes that originally write the depth buffer.
+    source.push_str(
+        "\nstruct Sm3Varyings {\n    @builtin(position) @invariant position: vec4<f32>,\n",
+    );
     for varying in &abi.varyings {
         writeln!(
             source,
@@ -630,6 +641,7 @@ pub fn lower_pass_to_wgsl(
         &vertex.instructions,
         &vertex_plan.external,
         &vertex_plan.samplers,
+        &BTreeSet::new(),
         &mut defined,
         vertex_relative,
     )?;
@@ -733,6 +745,7 @@ pub fn lower_pass_to_wgsl(
             &pixel.instructions,
             &pixel_plan.external,
             &pixel_plan.samplers,
+            &compare,
             &mut defined,
             None,
         )?;
@@ -946,7 +959,22 @@ fn write_texture_table_bindings(wgsl: &mut String, abi: &PassLoweringAbi) {
         "@group({TEXTURE_TABLE_GROUP}) @binding({TEXTURE_TABLE_BINDING_SAMPLERS}) var sm3_samplers: binding_array<sampler>;"
     )
     .unwrap();
+    if abi.samplers.iter().any(|slot| slot.depth_compare) {
+        wgsl.push_str(SHADOW_COMPARE_FN);
+    }
 }
+
+// D3D9 depth-format shadow maps answer a fetch with a bilinear-filtered
+// `z <= stored` test, not the stored depth; programs written for them average
+// those answers, so a plain fetch of the float atlas yields garbage edges.
+const SHADOW_COMPARE_FN: &str = "fn sm3_shadow_compare(slot: u32, uv: vec2<f32>, z: f32) -> f32 {
+    let size = vec2<f32>(textureDimensions(sm3_textures_2d[slot & 0xffffu]));
+    let stored = textureGather(0, sm3_textures_2d[slot & 0xffffu], sm3_samplers[slot >> 16u], uv);
+    let lit = select(vec4<f32>(0.0), vec4<f32>(1.0), stored >= vec4<f32>(z));
+    let f = fract(uv * size - 0.5);
+    return mix(mix(lit.w, lit.z, f.x), mix(lit.x, lit.y, f.x), f.y);
+}
+";
 
 fn emit_texture_slot_prologue(
     wgsl: &mut String,
@@ -1128,6 +1156,7 @@ fn emit_body(
     instructions: &[Sm3Instruction],
     external: &BTreeSet<Sm3Register>,
     samplers: &BTreeMap<u16, SamplerTextureDimension>,
+    compare: &BTreeSet<u16>,
     defined: &mut BTreeMap<Sm3Register, u8>,
     relative_c: Option<&str>,
 ) -> Result<(), Sm3WgslError> {
@@ -1138,6 +1167,7 @@ fn emit_body(
             instruction,
             external,
             samplers,
+            compare,
             defined,
             &mut flow,
             relative_c,
@@ -1183,6 +1213,7 @@ fn emit_instruction(
     instruction: &Sm3Instruction,
     external: &BTreeSet<Sm3Register>,
     samplers: &BTreeMap<u16, SamplerTextureDimension>,
+    compare: &BTreeSet<u16>,
     defined: &mut BTreeMap<Sm3Register, u8>,
     flow: &mut Vec<FlowFrame>,
     relative_c: Option<&str>,
@@ -1360,6 +1391,7 @@ fn emit_instruction(
                     component,
                     external,
                     samplers,
+                    compare,
                     defined,
                     relative_c,
                 )?;
@@ -1424,6 +1456,7 @@ fn operation_component(
     component: u8,
     external: &BTreeSet<Sm3Register>,
     samplers: &BTreeMap<u16, SamplerTextureDimension>,
+    compare: &BTreeSet<u16>,
     defined: &BTreeMap<Sm3Register, u8>,
     relative_c: Option<&str>,
 ) -> Result<String, Sm3WgslError> {
@@ -1566,7 +1599,8 @@ fn operation_component(
             format!("({x0} * {x1} + {y0} * {y1} + {})", scalar(&sources[2], 0)?)
         }
         Sm3Opcode::TexLd | Sm3Opcode::TexLdL | Sm3Opcode::TexLdD => texture_component(
-            at_word, opcode, controls, sources, component, external, samplers, defined, relative_c,
+            at_word, opcode, controls, sources, component, external, samplers, compare, defined,
+            relative_c,
         )?,
         Sm3Opcode::Nop
         | Sm3Opcode::Dcl
@@ -1614,6 +1648,7 @@ fn texture_component(
     component: u8,
     external: &BTreeSet<Sm3Register>,
     samplers: &BTreeMap<u16, SamplerTextureDimension>,
+    compare: &BTreeSet<u16>,
     defined: &BTreeMap<Sm3Register, u8>,
     relative_c: Option<&str>,
 ) -> Result<String, Sm3WgslError> {
@@ -1665,6 +1700,17 @@ fn texture_component(
         }
     };
     let slot = format!("sm3_slot_s{}", sampler.register.index);
+    if compare.contains(&sampler.register.index)
+        && dimension == SamplerTextureDimension::D2
+        && opcode != Sm3Opcode::TexLdD
+    {
+        let z = source_component(at_word, &sources[0], 2, external, defined, relative_c)?;
+        let z = match &w {
+            Some(w) => format!("{z} / {w}"),
+            None => z,
+        };
+        return Ok(format!("sm3_shadow_compare({slot}, {coordinate}, {z})"));
+    }
     let texture = format!("{}[{slot} & 0xffffu]", texture_array_name(dimension));
     let sampler_expr = format!("sm3_samplers[{slot} >> 16u]");
     let sample = if opcode == Sm3Opcode::TexLdL {

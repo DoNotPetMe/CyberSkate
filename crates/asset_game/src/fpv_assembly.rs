@@ -13,6 +13,7 @@ pub enum FpvPartRole {
     Gun,
     Attachment,
     Rocket,
+    Knife,
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +42,7 @@ pub struct FpvAssembly {
     pub view_bone: usize,
     pub camera_bone: Option<usize>,
     pub paired_bones: usize,
+    pub combined_hands: bool,
     pub tags: FpvAssemblyTags,
 }
 
@@ -65,8 +67,10 @@ impl core::fmt::Display for FpvAssemblyError {
 pub struct FpvAssemblyKey {
     pub hands: FpvMeshIndex,
     pub gun: FpvMeshIndex,
+    pub secondary_gun: Option<FpvMeshIndex>,
     pub attachments: Vec<FpvMeshIndex>,
     pub rocket: Option<FpvMeshIndex>,
+    pub knife: Option<FpvMeshIndex>,
     pub hide_tags: Vec<String>,
 }
 
@@ -74,6 +78,7 @@ pub struct FpvAssemblyKey {
 pub struct FpvSideAssemblies {
     pub bare: Arc<FpvAssembly>,
     pub rocket: Option<Arc<FpvAssembly>>,
+    pub melee: Option<Arc<FpvAssembly>>,
 }
 
 impl FpvSideAssemblies {
@@ -110,6 +115,7 @@ impl FpvAssembly {
         hands: FpvMeshIndex,
         mounts: &FpvMountPlan,
         rocket: bool,
+        knife: Option<FpvMeshIndex>,
         hide_tags: &[String],
     ) -> Result<Self, FpvAssemblyError> {
         let pose_of = |model: FpvMeshIndex| -> Result<&ModelPoseSrc, FpvAssemblyError> {
@@ -129,12 +135,23 @@ impl FpvAssembly {
                 }),
             ),
         ];
+        if let Some(model) = mounts.secondary_gun {
+            parts.push((
+                model,
+                FpvPartRole::Gun,
+                Some(Attach {
+                    parent_model: 0,
+                    tag: "tag_weapon1".into(),
+                }),
+            ));
+        }
         for mount in &mounts.attachments {
             parts.push((
                 mount.model,
                 FpvPartRole::Attachment,
                 Some(Attach {
-                    parent_model: mount.parent_model,
+                    parent_model: mount.parent_model
+                        + usize::from(mounts.secondary_gun.is_some() && mount.parent_model >= 2),
                     tag: mount.tag.clone(),
                 }),
             ));
@@ -150,6 +167,16 @@ impl FpvAssembly {
                 Some(Attach {
                     parent_model: mount.parent_model,
                     tag: mount.tag.clone(),
+                }),
+            ));
+        }
+        if let Some(model) = knife {
+            parts.push((
+                model,
+                FpvPartRole::Knife,
+                Some(Attach {
+                    parent_model: 0,
+                    tag: "tag_knife_attach".into(),
                 }),
             ));
         }
@@ -196,6 +223,7 @@ impl FpvAssembly {
             view_bone,
             camera_bone,
             paired_bones,
+            combined_hands: mounts.secondary_gun.is_some(),
             tags,
         })
     }

@@ -95,15 +95,20 @@ impl Plugin for ConsolePlugin {
             .init_resource::<crate::user_settings::PendingMenuBinding>()
             .init_resource::<crate::user_settings::UserSettingsPersistence>()
             .add_message::<ConsoleCommand>()
+            .add_message::<frame::TestControllerRumble>()
             .add_systems(
                 Startup,
                 (setup_console, crate::user_settings::load_user_settings).chain(),
             )
             .add_systems(PreUpdate, feed_console_keyboard.before(InputSystems))
             .init_resource::<frame::ActivePad>()
+            .init_resource::<frame::InputDevices>()
             .add_systems(
                 PreUpdate,
-                (crate::gamepad::track_active_pad, crate::gamepad::drive_menus_with_pad)
+                (
+                    crate::gamepad::track_active_pad,
+                    crate::gamepad::drive_menus_with_pad,
+                )
                     .chain()
                     .after(InputSystems)
                     .before(publish_client_action_input),
@@ -266,6 +271,17 @@ fn isolate_gameplay_input(
     for _ in mouse.read() {}
 }
 
+#[derive(Default)]
+struct PhysicalInputState {
+    active_pad: Option<Entity>,
+    blocked: std::collections::HashSet<BindButton>,
+    movement_ready: bool,
+    look_ready: bool,
+    mouse_activity: f32,
+    mouse_activity_start: f32,
+    prompts: Option<(bool, frame::PromptStyle)>,
+}
+
 fn publish_client_action_input(
     mut skate: ResMut<frame::SkateMode>,
     time: Res<Time>,
@@ -281,71 +297,38 @@ fn publish_client_action_input(
     mut hud_input: ResMut<frame::HudInputView>,
     settings: Res<frame::GameSettings>,
     mut out: ResMut<ClientActionInput>,
-    (gamepads, active, mut aiming_with_pad): (
+    (gamepads, active, mut devices, mut physical, prediction, presented, local): (
         Query<&bevy::input::gamepad::Gamepad>,
         Res<frame::ActivePad>,
-        Local<bool>,
+        ResMut<frame::InputDevices>,
+        Local<PhysicalInputState>,
+        Res<net::ClientPredictionState>,
+        Res<PresentedSnapshot>,
+        Res<net::LocalPresentClient>,
     ),
 ) {
+    if time.elapsed_secs() - physical.mouse_activity_start > 0.3 {
+        physical.mouse_activity = 0.0;
+        physical.mouse_activity_start = time.elapsed_secs();
+    }
     let pad = active.0.and_then(|entity| gamepads.get(entity).ok());
-    // Aim assist is the controller's alone: whoever last aimed with the
-    // mouse gets none.
-    out.pad_aim_assist = if *aiming_with_pad && pad.is_some() { settings.pad_aim_assist } else { 0 };
+    let inputs = BindInputs::new(&keys, &mouse_buttons).with_pad(pad);
+    let owner_changed = physical.active_pad != active.0;
+    physical.active_pad = active.0;
+    if owner_changed {
+        physical.blocked.retain(|button| !button.is_pad());
+        physical.movement_ready = true;
+        physical.look_ready = true;
+        out.pad_turn_rate = [0.0; 2];
+        out.pad_lockon = None;
+        out.pad_autoaim = None;
+        devices.aiming_with_pad = false;
+    }
+    out.pad_aim_assist = 0;
     out.pad_move = [0.0; 2];
     out.pad_look = [0.0; 2];
+    out.pad_look_delta = [0.0; 2];
     out.pad_deflection = 0.0;
-    let inventory_open = minecraft.as_ref().is_some_and(|ui| ui.active && ui.inventory_open);
-    hud_input.console_open = console.open;
-    if binds.is_changed() || hud_input.binding_keys.is_empty() {
-        hud_input.binding_keys.clear();
-        for (button, _) in binds.iter() {
-            if let Some(command) = binds.binding_name(button) {
-                let key = crate::binds::display_button(button).to_uppercase();
-                hud_input
-                    .binding_keys
-                    .entry(command.to_owned())
-                    .and_modify(|label| {
-                        if key < *label {
-                            *label = key.clone();
-                        }
-                    })
-                    .or_insert(key);
-            }
-        }
-    }
-    let script_menu = script_menus.is_some_and(|m| m.captures_input());
-    skate.input_blocked = console.open || script_menu;
-    // J, or clicking both sticks in together, toggles skating.
-    let sticks_clicked = pad.is_some_and(|pad| {
-        use bevy::input::gamepad::GamepadButton::{LeftThumb, RightThumb};
-        pad.pressed(LeftThumb)
-            && pad.pressed(RightThumb)
-            && (pad.just_pressed(LeftThumb) || pad.just_pressed(RightThumb))
-    });
-    if !skate.input_blocked && (keys.just_pressed(KeyCode::KeyJ) || sticks_clicked) {
-        skate.toggle_requested = true;
-    }
-    if binds.is_changed() || hud_input.use_key.is_none() {
-        hud_input.use_key = binds
-            .iter()
-            .filter(|(button, _)| {
-                matches!(
-                    binds.binding_name(*button),
-                    Some("+activate" | "+usereload")
-                )
-            })
-            .map(|(button, _)| crate::binds::display_button(button).to_uppercase())
-            .min();
-    }
-    if binds.is_changed() || hud_input.action_slot_keys.iter().all(Option::is_none) {
-        hud_input.action_slot_keys = core::array::from_fn(|index| {
-            binds
-                .iter()
-                .filter(|(_, id)| *id == 15 + index as u32 * 2)
-                .map(|(button, _)| crate::binds::display_button(button).to_uppercase())
-                .min()
-        });
-    }
     out.mouse_x = 0.0;
     out.mouse_y = 0.0;
     out.frame_msec = key_frame_msec(time.delta_secs());
@@ -358,101 +341,227 @@ fn publish_client_action_input(
     if out.fov_scale == 0.0 {
         out.fov_scale = 1.0;
     }
-
     let now = out.now_msec;
     let frame = out.frame_msec;
     if binds.is_changed() {
         *wheel_carry = 0.0;
     }
+    let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
+    let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
+    skate.input_blocked = console.open || script_menu;
+    // J, or clicking both sticks in together, toggles skating.
+    let sticks_clicked = pad.is_some_and(|pad| {
+        use bevy::input::gamepad::GamepadButton::{LeftThumb, RightThumb};
+        pad.pressed(LeftThumb)
+            && pad.pressed(RightThumb)
+            && (pad.just_pressed(LeftThumb) || pad.just_pressed(RightThumb))
+    });
+    if !skate.input_blocked && (keys.just_pressed(KeyCode::KeyJ) || sticks_clicked) {
+        skate.toggle_requested = true;
+    }
+    let modal_captured = console.open
+        || script_menu
+        || inventory_open
+        || keys.just_pressed(KeyCode::Escape)
+        || pad.is_some_and(|pad| pad.just_pressed(bevy::input::gamepad::GamepadButton::Start));
+    let captured = !devices.focused || modal_captured;
+    hud_input.console_open = console.open;
+    physical.blocked.retain(|button| inputs.pressed(*button));
 
-    if console.open || script_menu || inventory_open || keys.just_pressed(KeyCode::Escape) {
-        for _ in motion.read() {}
-        for _ in wheel.read() {}
+    let akimbo = prediction
+        .0
+        .predicted_local()
+        .or_else(|| presented.player(local.0))
+        .is_some_and(|ps| ps.last_weapon_hand == 1);
+    let mut current = [0; input_iw4::KEY_COUNT];
+    for (button, id) in binds.iter() {
+        let id = crate::binds::gameplay_binding(button, id, akimbo);
+        let key_num = host_keynum(button);
+        if key_num < current.len() {
+            current[key_num] = id;
+            let remapped = out.client.keys[key_num].binding != id;
+            if remapped || captured || (owner_changed && button.is_pad()) {
+                if out.client.keys[key_num].down != 0 {
+                    key_event(&mut out.client, key_num, false, now, frame);
+                }
+                if inputs.pressed(button) && (captured || remapped || !inputs.just_pressed(button))
+                {
+                    physical.blocked.insert(button);
+                }
+            }
+        }
+    }
+    for (key_num, id) in current.into_iter().enumerate() {
+        if out.client.keys[key_num].binding != id {
+            if out.client.keys[key_num].down != 0 {
+                key_event(&mut out.client, key_num, false, now, frame);
+            }
+            out.client.keys[key_num].binding = id;
+        }
+    }
+    if captured {
+        let mut mouse_activity = 0.0;
+        for event in motion.read() {
+            mouse_activity += event.delta.x.abs() + event.delta.y.abs();
+        }
+        if devices.focused {
+            physical.mouse_activity += mouse_activity;
+            if physical.mouse_activity >= 2.0 {
+                devices.pad_prompts = false;
+                physical.mouse_activity = 0.0;
+            }
+        }
+        wheel.clear();
+        scripted.take_mouse();
         *wheel_carry = 0.0;
         for key_num in 0..input_iw4::KEY_COUNT {
             if out.client.keys[key_num].down != 0 {
                 key_event(&mut out.client, key_num, false, now, frame);
             }
         }
+        let keys = out.client.keys;
+        out.scripted_ids.clear();
+        out.client = input_iw4::ClientInput {
+            keys,
+            ..Default::default()
+        };
+        out.pad_turn_rate = [0.0; 2];
+        out.pad_lockon = None;
+        out.pad_autoaim = None;
+        out.pad_was_ads = false;
+        devices.aiming_with_pad = false;
+        physical.movement_ready = false;
+        physical.look_ready = false;
+    } else {
+        out.pad_sensitivity = settings.pad_look_sensitivity();
+        out.pad_ads_sensitivity = settings.pad_ads_sensitivity;
+        out.pad_acceleration = settings.pad_acceleration;
+        if let Some(pad) = pad {
+            let sticks = crate::gamepad::sticks(pad, &settings);
+            physical.movement_ready |= sticks.movement == Vec2::ZERO;
+            physical.look_ready |= sticks.look == Vec2::ZERO;
+            if physical.movement_ready {
+                out.pad_move = [sticks.movement.x, sticks.movement.y];
+            }
+            if physical.look_ready {
+                let look = crate::gamepad::shaped_look(sticks.look, &settings);
+                out.pad_look = [look.x, look.y];
+                out.pad_deflection = sticks.look.length();
+            }
+        }
+        for (button, _) in binds.iter() {
+            let key_num = host_keynum(button);
+            if key_num >= input_iw4::KEY_COUNT || physical.blocked.contains(&button) {
+                continue;
+            }
+            if inputs.just_pressed(button) {
+                key_event(&mut out.client, key_num, true, now, frame);
+            }
+            if !inputs.pressed(button) && out.client.keys[key_num].down != 0 {
+                key_event(&mut out.client, key_num, false, now, frame);
+            }
+        }
+        for event in wheel.read() {
+            let steps = wheel_detents(event.unit, event.y, &mut wheel_carry);
+            let button = if steps > 0 {
+                BindButton::WheelUp
+            } else {
+                BindButton::WheelDown
+            };
+            for _ in 0..steps.unsigned_abs() {
+                pulse_wheel_binding(&binds, &mut out.client, button, now, frame);
+            }
+            if steps != 0 {
+                devices.pad_prompts = false;
+            }
+        }
+
+        let (sx, sy) = scripted.take_mouse();
+        let (rx, ry) = scripted.mouse_rate().unwrap_or((0.0, 0.0));
+        out.mouse_x += sx + rx;
+        out.mouse_y += sy + ry;
+
+        for event in motion.read() {
+            out.mouse_x += event.delta.x;
+            out.mouse_y += event.delta.y;
+        }
+        let mouse_moved = out.mouse_x != 0.0 || out.mouse_y != 0.0;
+        if mouse_moved {
+            devices.aiming_with_pad = false;
+            out.pad_look = [0.0; 2];
+            out.pad_deflection = 0.0;
+            out.pad_turn_rate = [0.0; 2];
+            physical.mouse_activity += out.mouse_x.abs() + out.mouse_y.abs();
+            if physical.mouse_activity >= 2.0 {
+                devices.pad_prompts = false;
+                physical.mouse_activity = 0.0;
+            }
+        } else if out.pad_deflection > 0.0 {
+            devices.aiming_with_pad = true;
+        }
+    }
+    if !modal_captured {
+        let scripted_now: std::collections::BTreeSet<u32> = scripted.ids().collect();
+        let down: Vec<u32> = scripted_now
+            .difference(&out.scripted_ids)
+            .copied()
+            .collect();
+        let up: Vec<u32> = out
+            .scripted_ids
+            .difference(&scripted_now)
+            .copied()
+            .collect();
+        for id in down {
+            let extra = now.wrapping_sub(frame as i32);
+            let extra = if extra == 0 { -(frame as i32) } else { extra };
+            input_cmd(&mut out.client, id, SCRIPT_KEYNUM, extra, frame);
+        }
+        for id in up {
+            if let Some(up_id) = key_up_command_id(id) {
+                input_cmd(&mut out.client, up_id, SCRIPT_KEYNUM, now, frame);
+            }
+        }
+        out.scripted_ids = scripted_now;
+    }
+    if devices.focused
+        && (keys.get_just_pressed().next().is_some()
+            || mouse_buttons.get_just_pressed().next().is_some())
+    {
+        devices.pad_prompts = false;
+        physical.mouse_activity = 0.0;
+    }
+    let prompts = (devices.pad_prompts, devices.style);
+    if physical.prompts == Some(prompts) && !binds.is_changed() {
         return;
     }
-
-    out.pad_sensitivity = settings.pad_sensitivity / frame::GameSettings::PAD_SENSITIVITY_DEFAULT;
-    out.pad_ads_sensitivity = settings.pad_ads_sensitivity;
-    if let Some(pad) = pad {
-        let sticks = crate::gamepad::sticks(pad, &settings);
-        let look = crate::gamepad::shaped_look(sticks.look, &settings);
-        out.pad_move = [sticks.movement.x, sticks.movement.y];
-        out.pad_look = [look.x, look.y];
-        // Lock-on wakes on the look stick or strafing, not walking forward.
-        out.pad_deflection = sticks.movement.x.abs().max(sticks.look.length());
-        if sticks.look.length() > 0.0 || sticks.movement.length() > 0.0 || pad.get_just_pressed().next().is_some() {
-            *aiming_with_pad = true;
-        }
-    }
-    let inputs = BindInputs::new(&keys, &mouse_buttons).with_pad(pad);
-    for (button, id) in binds.iter() {
-        let key_num = host_keynum(button);
-        if key_num >= input_iw4::KEY_COUNT {
-            continue;
-        }
-        out.client.keys[key_num].binding = id;
-        if inputs.just_pressed(button) {
-            key_event(&mut out.client, key_num, true, now, frame);
-        }
-        if inputs.just_released(button) {
-            key_event(&mut out.client, key_num, false, now, frame);
-        }
-    }
-    for event in wheel.read() {
-        let steps = wheel_detents(event.unit, event.y, &mut wheel_carry);
-        if steps == 0 {
-            continue;
-        }
-        let button = if steps > 0 {
-            BindButton::WheelUp
-        } else {
-            BindButton::WheelDown
+    physical.prompts = Some(prompts);
+    let mut labels: Vec<_> = binds
+        .iter()
+        .filter(|(button, _)| button.is_pad() == devices.pad_prompts)
+        .collect();
+    labels.sort_by_key(|(button, _)| host_keynum(*button));
+    hud_input.binding_keys.clear();
+    hud_input.use_key = None;
+    hud_input.action_slot_keys = [None, None, None, None];
+    for (button, id) in labels {
+        let label = match button {
+            BindButton::Pad(button) => button.prompt(devices.style).to_owned(),
+            _ => crate::binds::display_button(button).to_uppercase(),
         };
-        for _ in 0..steps.unsigned_abs() {
-            pulse_wheel_binding(&binds, &mut out.client, button, now, frame);
+        if let Some(command) = binds.binding_name(button) {
+            hud_input
+                .binding_keys
+                .entry(command.to_owned())
+                .or_insert_with(|| label.clone());
+            if matches!(command, "+activate" | "+usereload") && hud_input.use_key.is_none() {
+                hud_input.use_key = Some(label.clone());
+            }
         }
-    }
-
-    let scripted_now: std::collections::BTreeSet<u32> = scripted.ids().collect();
-    let down: Vec<u32> = scripted_now
-        .difference(&out.scripted_ids)
-        .copied()
-        .collect();
-    let up: Vec<u32> = out
-        .scripted_ids
-        .difference(&scripted_now)
-        .copied()
-        .collect();
-    for id in down {
-        let extra = now.wrapping_sub(frame as i32);
-        let extra = if extra == 0 { -(frame as i32) } else { extra };
-        input_cmd(&mut out.client, id, SCRIPT_KEYNUM, extra, frame);
-    }
-    for id in up {
-        if let Some(up_id) = key_up_command_id(id) {
-            input_cmd(&mut out.client, up_id, SCRIPT_KEYNUM, now, frame);
+        for index in 0..4 {
+            if id == 15 + index as u32 * 2 && hud_input.action_slot_keys[index].is_none() {
+                hud_input.action_slot_keys[index] = Some(label.clone());
+            }
         }
-    }
-    out.scripted_ids = scripted_now;
-
-    let (sx, sy) = scripted.take_mouse();
-    let (rx, ry) = scripted.mouse_rate().unwrap_or((0.0, 0.0));
-    out.mouse_x += sx + rx;
-    out.mouse_y += sy + ry;
-    let mut moved = 0.0;
-    for ev in motion.read() {
-        out.mouse_x += ev.delta.x;
-        out.mouse_y += ev.delta.y;
-        moved += ev.delta.x.abs() + ev.delta.y.abs();
-    }
-    if moved > 2.0 || mouse_buttons.get_just_pressed().next().is_some() {
-        *aiming_with_pad = false;
     }
 }
 

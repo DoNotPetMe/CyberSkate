@@ -10,6 +10,7 @@ use math_iw4::{add_lean_to_position, angle_vectors};
 use net::{
     AppliedEntityEventWalk, ClientActionInput, FrameClock, LocalPresentClient, PresentedSnapshot,
 };
+use playerstate_iw4::ENTITYNUM_NONE;
 use weapon_iw4::{
     VIEW_DAMAGE_UNDIRECTED, VIEW_ORG_BOB_Z_MIN_OFS, ViewAngleBobInputs, ViewOrgBobInputs,
     crash_land_fall_height, crash_land_view_dip, damage_feedback_kick, get_viewmodel_weapon_index,
@@ -299,6 +300,7 @@ pub fn sync_camera_from_presented(
         weapons.as_deref(),
         death_cam_clip.0.as_deref(),
     ) {
+        let pose = earthquake_pose(pose, &presented, clock.time());
         let eye = transform_from_iw_view(pose);
         for mut transform in &mut q {
             transform.translation = eye.translation;
@@ -316,6 +318,7 @@ pub fn sync_camera_from_presented(
         return;
     }
     if let Some(pose) = remote_missile_camera(&presented, local.0, clock.time()) {
+        let pose = earthquake_pose(pose, &presented, clock.time());
         let eye = transform_from_iw_view(pose);
         for mut transform in &mut q {
             transform.translation = eye.translation;
@@ -339,6 +342,7 @@ pub fn sync_camera_from_presented(
         else {
             return;
         };
+        let pose = earthquake_pose(pose, &presented, clock.time());
         let eye = transform_from_iw_view(pose);
         for mut transform in &mut q {
             transform.translation = eye.translation;
@@ -396,7 +400,7 @@ pub fn sync_camera_from_presented(
             aim_down_sight: facts.aim_down_sight,
             idle: facts.idle,
             frametime: clock.frametime_secs(),
-            hold_breath_scale: 1.0,
+            hold_breath_scale: ps.hold_breath_scale,
             weap_idle_time: kick.weap_idle_time,
             view_last_idle_factor: kick.view_last_idle_factor,
         }),
@@ -451,8 +455,9 @@ pub fn sync_camera_from_presented(
     if origin[2] < min_z {
         origin[2] = min_z;
     }
-    kick.refdef_vieworg = origin;
-    let pose = WorldCameraPose { origin, angles };
+    let pose = earthquake_pose(WorldCameraPose { origin, angles }, &presented, clock.time());
+    kick.refdef_vieworg = pose.origin;
+    kick.refdef_view_angles = pose.angles;
     let eye = transform_from_iw_view(pose);
     for mut transform in &mut q {
         transform.translation = eye.translation;
@@ -530,8 +535,6 @@ fn apply_fpv_lens_fov(
     }
     Some(horiz)
 }
-
-const ENTITYNUM_NONE: i32 = 0x7FF;
 
 fn stamp_and_land_origin_z(
     kick: &mut SessionViewKick,
@@ -639,4 +642,21 @@ pub(crate) fn iw_view_placement_to_bevy_camera_local(
         rotation: crate::anim::fpv_pose::placement_angles_to_bevy_camera_quat(angles_deg),
         ..Default::default()
     }
+}
+
+fn earthquake_pose(
+    mut pose: WorldCameraPose,
+    presented: &PresentedSnapshot,
+    now_ms: i32,
+) -> WorldCameraPose {
+    if let Some(snapshot) = presented.snapshot() {
+        let eye = pose.origin;
+        for quake in &snapshot.meta.objectives.earthquakes {
+            let offset = quake.angle_offset(eye, now_ms);
+            for (angle, delta) in pose.angles.iter_mut().zip(offset) {
+                *angle += delta;
+            }
+        }
+    }
+    pose
 }

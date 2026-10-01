@@ -28,6 +28,7 @@ pub struct OccupiedMissile {
     pub id: Option<u32>,
     pub entnum: Option<u32>,
     pub weapon: u32,
+    pub ignited: bool,
     pub origin: [f32; 3],
     pub angles: [f32; 3],
     pub name: String,
@@ -82,10 +83,12 @@ pub struct MissileBoltState {
 }
 
 pub struct MissileBoltRow {
+    pub projectile: Option<u32>,
     pub weapon: u32,
     pub trail_played: bool,
     pub beacon_played: bool,
     pub ignition_played: bool,
+    pub ignition_fx_played: bool,
 }
 
 pub fn register_missile_systems(app: &mut App) {
@@ -235,6 +238,14 @@ fn occupy_missile_scene_ents(
             id: row.authoritative_id().map(|id| id.0),
             entnum,
             weapon: row.weapon(),
+            ignited: match row {
+                net::PresentedProjectile::Authoritative(p) => weapons_reg
+                    .and_then(|reg| reg.facts_of(p.weapon))
+                    .is_none_or(|facts| {
+                        at_time >= p.spawn_time_ms.saturating_add(facts.ignition_delay_ms)
+                    }),
+                net::PresentedProjectile::Predicted { .. } => false,
+            },
             origin,
             angles,
             name: name.to_owned(),

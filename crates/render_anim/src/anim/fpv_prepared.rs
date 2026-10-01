@@ -27,11 +27,15 @@ const NO_COLOUR_MAP: &str = "technique samples no colour map";
 pub struct FpvRigSet {
     bare: [Option<Arc<PreparedFpvRig>>; 2],
     rocket: [Option<Arc<PreparedFpvRig>>; 2],
+    melee: [Option<Arc<PreparedFpvRig>>; 2],
 }
 
 impl FpvRigSet {
-    pub fn pick(&self, rocket: bool, dual: bool) -> Option<&Arc<PreparedFpvRig>> {
+    pub fn pick(&self, rocket: bool, dual: bool, melee: bool) -> Option<&Arc<PreparedFpvRig>> {
         let hand = usize::from(dual);
+        if melee && let Some(rig) = &self.melee[hand] {
+            return Some(rig);
+        }
         match (rocket, &self.rocket[hand]) {
             (true, Some(rig)) => Some(rig),
             _ => self.bare[hand].as_ref(),
@@ -383,7 +387,10 @@ impl FpvPreparationJob {
                 let Some(sides) = registry.fpv_assemblies_for(id, parent, axis) else {
                     continue;
                 };
-                for assembly in std::iter::once(&sides.bare).chain(&sides.rocket) {
+                for assembly in std::iter::once(&sides.bare)
+                    .chain(&sides.rocket)
+                    .chain(&sides.melee)
+                {
                     if !seen_assemblies.insert(assembly_key(assembly)) {
                         continue;
                     }
@@ -744,6 +751,28 @@ impl FpvPreparationJob {
                     name: refusal.to_string(),
                 });
             }
+            let melee = match assemblies
+                .melee
+                .as_ref()
+                .map(|assembly| self.composition(assembly))
+                .transpose()
+            {
+                Ok(melee) => melee,
+                Err(error) => {
+                    return FpvWeaponSlot::Refused(RenderGapCause::FpvDependencyUnresolved {
+                        weapon_id: id,
+                        role: "melee FPV layout",
+                        name: error,
+                    });
+                }
+            };
+            if let Some(refusal) = melee.as_ref().and_then(|composition| composition.refusal()) {
+                return FpvWeaponSlot::Refused(RenderGapCause::FpvDependencyUnresolved {
+                    weapon_id: id,
+                    role: "melee FPV material",
+                    name: refusal.to_string(),
+                });
+            }
             let mut rigs = FpvRigSet::default();
             rigs.bare[0] = Some(self.rig(&bare, false, &right_orders, &[]));
             if left.is_some() {
@@ -753,6 +782,12 @@ impl FpvPreparationJob {
                 rigs.rocket[0] = Some(self.rig(rocket, false, &right_orders, &[]));
                 if left.is_some() {
                     rigs.rocket[1] = Some(self.rig(rocket, true, &right_orders, &left_orders));
+                }
+            }
+            if let Some(melee) = &melee {
+                rigs.melee[0] = Some(self.rig(melee, false, &right_orders, &[]));
+                if left.is_some() {
+                    rigs.melee[1] = Some(self.rig(melee, true, &right_orders, &left_orders));
                 }
             }
             FpvWeaponSlot::Ready(Arc::new(FpvWeaponView {

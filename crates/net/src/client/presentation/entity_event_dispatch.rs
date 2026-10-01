@@ -25,6 +25,12 @@ pub struct DispatchedEntityEvent {
 }
 
 #[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
+pub struct EntityRumble {
+    pub entity: Entity,
+    pub event: DispatchedEntityEvent,
+}
+
+#[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
 pub struct EntityEventSound {
     pub entity: Entity,
     pub event: DispatchedEntityEvent,
@@ -76,6 +82,15 @@ pub struct KillcamFxTransition {
 pub struct EntityExplosion {
     pub entity: Entity,
     pub event: DispatchedEntityEvent,
+}
+
+#[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
+pub struct EntityPhysicsSphere {
+    pub entity: Entity,
+    pub origin: [f32; 3],
+    pub outer_radius: f32,
+    pub inner_radius: f32,
+    pub magnitude: f32,
 }
 
 #[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
@@ -281,6 +296,8 @@ fn dispatch_entity_events(
                     event: ev.event,
                     payload: EntityEventPayload {
                         number,
+                        other_entity_num: next_state.other_entity_num,
+                        attacker_entity_num: next_state.attacker_entity_num,
                         event_parm: ev.event_parm,
                         origin,
                         surf_type: (ev.event_parm & 0x1f) as u8,
@@ -331,7 +348,7 @@ fn dispatch_entity_events(
 
         let entity = match resolved {
             Some(entity) => entity,
-            None if origin_space_without_centity(record.event) => Entity::PLACEHOLDER,
+            None if event_without_centity(record.event) => Entity::PLACEHOLDER,
             None => {
                 target_gaps.raise(NetGapCause::EventNumberHasNoEntity { number });
                 continue;
@@ -411,6 +428,24 @@ fn dispatch_classified(
                 event: dispatched,
             });
         }
+        Ok(EntityEventAction::Rumble) => {
+            did = true;
+            commands.trigger(EntityRumble {
+                entity,
+                event: dispatched,
+            });
+        }
+        Ok(EntityEventAction::PhysicsSphere) => {
+            did = true;
+            let [outer_radius, inner_radius, magnitude] = dispatched.payload.origin2;
+            commands.trigger(EntityPhysicsSphere {
+                entity,
+                origin: dispatched.payload.origin,
+                outer_radius,
+                inner_radius,
+                magnitude,
+            });
+        }
         Ok(EntityEventAction::PlayFx) => {
             did = true;
             commands.trigger(EntityPlayFx {
@@ -457,8 +492,12 @@ fn dispatch_classified(
     }
 }
 
-fn origin_space_without_centity(event: EntityEventKind) -> bool {
-    matches!(entity_event_action(event), Ok(EntityEventAction::PlayFx))
+fn event_without_centity(event: EntityEventKind) -> bool {
+    matches!(
+        entity_event_action(event),
+        Ok(EntityEventAction::PlayFx | EntityEventAction::Obituary | EntityEventAction::Rumble)
+    ) || event == EntityEventKind::PLAY_RUMBLE_ON_POS
+        || event == EntityEventKind::STOPSOUNDS
         || event == EntityEventKind::SOUND_ALIAS
         || event == EntityEventKind::SOUND_ALIAS_AS_MASTER
 }

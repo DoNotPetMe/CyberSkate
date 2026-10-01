@@ -8,10 +8,8 @@ use crate::script::runtime::raise;
 use crate::script::{Arc, NativeRegistry, Runtime, Value};
 use crate::world::ClientId;
 use bevy_ecs::prelude::World;
-use weapon_iw4::WeaponState;
-
-const WEAPTYPE_GRENADE: i32 = 1;
-pub(crate) const WEAPTYPE_PROJECTILE: i32 = 2;
+pub(crate) use weapon_iw4::WEAPTYPE_PROJECTILE;
+use weapon_iw4::{WEAPTYPE_GRENADE, WeaponState};
 
 const GRENADE_LINGER_MS: i64 = 30_000; // threads on the grenade keep running after it explodes
 
@@ -59,9 +57,22 @@ fn adopt(
     let now = now_ms(world);
     let model =
         Value::string(FrameWorld::from_world(world).weapon_projectile_model(projectile.weapon));
+    let facts = FrameWorld::from_world(world).equipment_facts_for(projectile.weapon);
+    let presence = if facts.is_some_and(|facts| !facts.timed_detonation && facts.stickiness != 0) {
+        Some(super::presence::spawn_presence(world, projectile.origin)?)
+    } else {
+        None
+    };
     let mut runtime = world.resource_mut::<Runtime>();
     let object = runtime.create_entity(EntityKind::Missile(projectile.id), classname)?;
-    runtime.entities.get_mut(&object).unwrap().number = projectile.entnum;
+    let owner = runtime
+        .players
+        .get(&projectile.owner.0)
+        .map(|slot| slot.object);
+    let entity = runtime.entities.get_mut(&object).unwrap();
+    entity.presence = presence;
+    entity.missile_owner = owner;
+    entity.number = projectile.entnum;
     runtime.set_object_field(object, "model", model);
     runtime.set_object_field(object, "origin", Value::Vector(projectile.origin_at(now)));
     runtime.set_object_field(
@@ -94,6 +105,17 @@ pub(crate) fn launch(
 }
 
 pub(crate) fn register(registry: &mut NativeRegistry) {
+    registry.register(Function, "getmissileowner", |world, _, args| {
+        if args.len() != 1 {
+            return Err("GetMissileOwner requires one missile argument".into());
+        }
+        let (object, _, _) = missile_of(world, &args[0])?;
+        let runtime = world.resource::<Runtime>();
+        let owner = runtime.entities[&object]
+            .missile_owner
+            .filter(|owner| runtime.players.values().any(|slot| slot.object == *owner));
+        Ok(owner.map_or(Value::Undefined, Value::Object))
+    });
     registry.register(Method, "predictgrenade", |world, receiver, _| {
         let (_, id, number) = missile_of(world, receiver)?;
         let now = now_ms(world);
@@ -201,6 +223,10 @@ pub(crate) fn sync_engine_events(world: &mut World) {
                 let weapon = super::players::script_weapon(world, owner.0, weapon);
                 (owner, "grenade_pullback", vec![weapon_name(world, weapon)])
             }
+            WeaponNote::DetonationRequested { owner, weapon } => {
+                let weapon = super::players::script_weapon(world, owner.0, weapon);
+                (owner, "detonate", vec![weapon_name(world, weapon)])
+            }
             WeaponNote::Fired { owner } => (owner, "begin_firing", Vec::new()),
             WeaponNote::ReloadStarted { owner } => (owner, "reload_start", Vec::new()),
             WeaponNote::Detonated { .. } | WeaponNote::Stuck { .. } => continue,
@@ -211,11 +237,13 @@ pub(crate) fn sync_engine_events(world: &mut World) {
         }
     }
     adopt_fired(world);
+    super::triggers::dispatch_grenade_touches(world);
     super::guidance::advance(world);
     super::turrets::advance(world);
     settle_projectiles(world, &notes);
     settle_items(world);
     super::vehicles::advance(world);
+    super::spectators::advance(world);
     super::players::publish_radar(world);
     super::physics::select_usables(world);
 }
@@ -259,10 +287,19 @@ fn notify_weapon_changes(world: &mut World) {
 fn adopt_fired(world: &mut World) {
     let now = now_ms(world);
     let seen = std::mem::replace(&mut world.resource_mut::<Runtime>().missiles_seen_ms, now);
+    let touches = world
+        .resource::<Runtime>()
+        .grenade_touches
+        .iter()
+        .map(|touch| touch.projectile)
+        .collect::<Vec<_>>();
+    let mut adopted = std::collections::BTreeSet::new();
     let fresh: Vec<crate::ProjectileState> = crate::frame::collect_projectiles(world)
         .into_iter()
+        .chain(touches)
         .filter(|p| p.live && p.spawn_time_ms > seen)
         .filter(|p| !world.resource::<Runtime>().missiles.contains_key(&p.id))
+        .filter(|p| adopted.insert(p.id))
         .collect();
     for projectile in fresh {
         let player = super::players::player_object(world, projectile.owner.0);
@@ -408,7 +445,12 @@ fn settle_projectiles(world: &mut World, notes: &[WeaponNote]) {
                 if let Some(origin) = detonated {
                     runtime.set_object_field(object, "origin", Value::Vector(origin));
                 }
-                let lingers = runtime.entities[&object].classname.as_ref() == "grenade";
+                let entity = runtime.entities.get_mut(&object).unwrap();
+                let lingers = entity.classname.as_ref() == "grenade" && entity.presence.is_none();
+                entity.can_damage = false;
+                if let Some(presence) = entity.presence.take() {
+                    runtime.retired_presence.push((presence, true));
+                }
                 drop(runtime);
                 if let Some(origin) = detonated {
                     raise(

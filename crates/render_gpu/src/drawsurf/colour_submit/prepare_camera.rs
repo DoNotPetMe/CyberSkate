@@ -298,8 +298,8 @@ pub(super) fn prepare_camera_colour(lane: CameraLane<'_>) {
         .take()
         .expect("colour pack plan is filled");
     if census_on {
-        census.end_depth_restore_n = Some(pack_plan.work.end_restore_n);
-        census.end_depth_range_type = Some(pack_plan.work.end_depth_range_type);
+        census.frame.end_depth_restore_n = Some(pack_plan.work.end_restore_n);
+        census.frame.end_depth_range_type = Some(pack_plan.work.end_depth_range_type);
     }
     let gather_started = colour_census_clock(census_on);
     let world_ib_skip = pretess.layout.as_ref().is_some_and(|layout| {
@@ -351,24 +351,24 @@ pub(super) fn prepare_camera_colour(lane: CameraLane<'_>) {
         );
     }
     if census_on {
-        census.world_index_gaps = Some(gathered.index_gaps);
-        census.world_run_indices_n = Some(pretess.logical_index_count());
-        census.world_ib_skip = Some(u32::from(world_ib_skip));
+        census.frame.world_index_gaps = Some(gathered.index_gaps);
+        census.frame.world_run_indices_n = Some(pretess.logical_index_count());
+        census.frame.world_ib_skip = Some(u32::from(world_ib_skip));
     }
     if census_on {
-        census.world_gathered = Some(u32::from(pretess.index().is_some()));
+        census.frame.world_gathered = Some(u32::from(pretess.index().is_some()));
     }
 
     if census_on {
-        census.smodel_pretess_skip = Some(0);
-        census.smodel_pretess_runs = Some(0);
-        census.smodel_pretess_hits = Some(0);
-        census.smodel_pretess_verts = Some(0);
-        census.smodel_pretess_indices = Some(0);
-        census.smodel_cached_lighting = Some(0);
-        census.smodel_pretess_local = Some(0);
-        census.smodel_pretess_length1 = Some(0);
-        census.submit_gather_ms = colour_census_ms(gather_started);
+        census.frame.smodel_pretess_skip = Some(0);
+        census.frame.smodel_pretess_runs = Some(0);
+        census.frame.smodel_pretess_hits = Some(0);
+        census.frame.smodel_pretess_verts = Some(0);
+        census.frame.smodel_pretess_indices = Some(0);
+        census.frame.smodel_cached_lighting = Some(0);
+        census.frame.smodel_pretess_local = Some(0);
+        census.frame.smodel_pretess_length1 = Some(0);
+        census.frame.submit_gather_ms = colour_census_ms(gather_started);
     }
     let prepare_started = colour_census_clock(census_on);
     let exec_frame = &extracted.frame.exec_frame;
@@ -523,14 +523,14 @@ pub(super) fn prepare_camera_colour(lane: CameraLane<'_>) {
         last_refusal = Some(GpuSubmitRefusal::PipelineNotReady);
     }
     if census_on {
-        census.submit_prepare_ms = colour_census_ms(prepare_started);
+        census.frame.submit_prepare_ms = colour_census_ms(prepare_started);
     }
     if !prepared.is_empty() {
         if census_on {
-            census.submit_arena_ms = Some(arena_ms);
-            census.pack_arena_share_n = Some(arena_share);
-            census.pack_arena_vertex_n = Some(as_u32(arena_vertex_n));
-            census.pack_arena_pixel_n = Some(as_u32(arena_pixel_n));
+            census.frame.submit_arena_ms = Some(arena_ms);
+            census.frame.pack_arena_share_n = Some(arena_share);
+            census.frame.pack_arena_vertex_n = Some(as_u32(arena_vertex_n));
+            census.frame.pack_arena_pixel_n = Some(as_u32(arena_pixel_n));
         }
         let smodel_ib_skip = smodel_cache_gpu.write_dynamic_indices(
             queue,

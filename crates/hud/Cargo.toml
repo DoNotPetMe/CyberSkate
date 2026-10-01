@@ -23,7 +23,6 @@ net = { path = "../net" }
 sim = { path = "../sim" }
 math_iw4.workspace = true
 gamemode_iw4.workspace = true
-killcam_iw4 = { path = "../killcam_iw4" }
 
 [lints]
 workspace = true

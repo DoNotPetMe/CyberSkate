@@ -49,28 +49,20 @@ pub struct ClientActionInput {
     pub now_msec: i32,
     pub frame_msec: u32,
 
-    /// The controller's move stick, forward and right, -1 to 1.
+    /// Forward and right.
     pub pad_move: [f32; 2],
-    /// The controller's look stick after its response curve and
-    /// inversion: right and up, -1 to 1.
+    /// Right and up.
     pub pad_look: [f32; 2],
-    /// The larger of the two sticks' deflections, 0 to 1.
     pub pad_deflection: f32,
-    /// Look sensitivity against the default, and its multiplier down the
-    /// sight.
     pub pad_sensitivity: f32,
+    pub pad_acceleration: bool,
     pub pad_ads_sensitivity: f32,
-    /// The turn rates reached so far, pitch and yaw, degrees a second.
     pub pad_turn_rate: [f32; 2],
-    /// This frame's controller turn, pitch and yaw, degrees.
+    /// Pitch and yaw, degrees.
     pub pad_look_delta: [f32; 2],
-    /// Aim assist: 0 off, 1 slowdown and lock-on, 2 with auto aim.
     pub pad_aim_assist: u8,
-    /// The target lock-on follows, and the one auto aim closes on with the
-    /// seconds it has left.
     pub pad_lockon: Option<u64>,
     pub pad_autoaim: Option<(u64, f32)>,
-    /// Aiming down the sight last frame, for auto aim on raising it.
     pub pad_was_ads: bool,
 }
 
@@ -98,6 +90,7 @@ impl Default for ClientActionInput {
             pad_look: [0.0; 2],
             pad_deflection: 0.0,
             pad_sensitivity: 1.0,
+            pad_acceleration: true,
             pad_ads_sensitivity: 1.0,
             pad_turn_rate: [0.0; 2],
             pad_look_delta: [0.0; 2],
@@ -175,9 +168,17 @@ pub fn build_usercmd(input: &mut ClientActionInput, look: &LookState, server_tim
         input.fov_scale,
     );
     let (mouse_pitch, mouse_yaw) = mouse_move_angles(mx, my, input.m_yaw, input.m_pitch);
-    // The controller's sticks add to the keys and the mouse.
-    let pad_pitch = (input.pad_look_delta[0] * ANGLE2SHORT) as i32;
-    let pad_yaw = (input.pad_look_delta[1] * ANGLE2SHORT) as i32;
+    let mouse_look = input.mouse_x != 0.0 || input.mouse_y != 0.0;
+    let pad_pitch = if mouse_look {
+        0
+    } else {
+        (input.pad_look_delta[0] * ANGLE2SHORT) as i32
+    };
+    let pad_yaw = if mouse_look {
+        0
+    } else {
+        (input.pad_look_delta[1] * ANGLE2SHORT) as i32
+    };
     let forward = (axes.forward + input.pad_move[0]).clamp(-1.0, 1.0);
     let right = (axes.right + input.pad_move[1]).clamp(-1.0, 1.0);
 

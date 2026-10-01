@@ -41,7 +41,14 @@ pub(crate) fn load_user_settings(
     match fs::read_to_string(&path) {
         Ok(source) => parse_settings(&source, &mut settings, &mut binds),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => warn!("could not read {}: {error}", path.display()),
+        Err(error) => {
+            // Do not replace settings we could not read with session defaults.
+            persistence.path = None;
+            warn!(
+                "could not read {}: {error}; user settings are session-only, file preserved",
+                path.display()
+            );
+        }
     }
     settings.sanitize();
     persistence.last_payload = Some(serialize_settings(&settings, &binds));
@@ -91,9 +98,8 @@ pub(crate) fn consume_menu_binding(
         return;
     }
     let pad = active.0.and_then(|entity| gamepads.get(entity).ok());
-    let pad_start = pad.is_some_and(|pad| pad.just_pressed(bevy::input::gamepad::GamepadButton::Start));
-    // A controller button binds the command on the controller; Start stays
-    // the menu button and cancels, as Escape does.
+    let pad_start =
+        pad.is_some_and(|pad| pad.just_pressed(bevy::input::gamepad::GamepadButton::Start));
     let pad_button = pad.and_then(|pad| {
         pad.get_just_pressed()
             .copied()
@@ -150,26 +156,27 @@ pub(crate) fn consume_menu_binding(
 
 pub(crate) fn sync_binding_view(
     binds: Res<KeyBinds>,
+    devices: Res<frame::InputDevices>,
     mut view: ResMut<ui::BindingView>,
     mut dvars: ResMut<frame::UiMenuDvars>,
+    mut style: Local<Option<frame::PromptStyle>>,
 ) {
-    if !binds.is_changed() {
+    if !binds.is_changed() && *style == Some(devices.style) {
         return;
     }
-    let mut chords = std::collections::BTreeMap::<u32, Vec<String>>::new();
-    let mut pads = std::collections::BTreeMap::<u32, Vec<String>>::new();
+    *style = Some(devices.style);
+    let mut chords = std::collections::BTreeMap::<u32, (Vec<String>, Vec<String>)>::new();
     for (button, id) in binds.iter() {
+        let (keys, buttons) = chords.entry(id).or_default();
         match button {
-            BindButton::Pad(pad) => pads.entry(id).or_default().push(pad.label().to_owned()),
-            _ => chords.entry(id).or_default().push(display_button(button)),
+            BindButton::Pad(pad) => buttons.push(pad.prompt(devices.style).to_owned()),
+            _ => keys.push(display_button(button)),
         }
     }
     view.chords.clear();
-    for id in chords.keys().chain(pads.keys()).copied().collect::<std::collections::BTreeSet<_>>() {
-        let mut keys = chords.remove(&id).unwrap_or_default();
+    for (id, (mut keys, mut buttons)) in chords {
         keys.sort();
         keys.dedup();
-        let mut buttons = pads.remove(&id).unwrap_or_default();
         buttons.sort();
         buttons.dedup();
         let text = match (keys.is_empty(), buttons.is_empty()) {
@@ -228,30 +235,43 @@ pub(crate) fn apply_master_volume(
 
 pub(crate) fn sync_player_name(
     settings: Res<frame::GameSettings>,
-    mut installed: MessageReader<frame::MatchInstalled>,
+    generation: Res<frame::WorldGeneration>,
+    has_world: Res<frame::HasWorld>,
+    role: Res<frame::RuntimeRole>,
     local: Option<Res<net::LocalPresentClient>>,
+    link: Option<Res<net::UdpClientLink>>,
     mut inbox: Option<ResMut<net::ClientActionInbox>>,
     mut seq: ResMut<net::ActionRequestIds>,
+    mut sent: Local<Option<(frame::WorldGeneration, sim::ClientId, [u8; 16])>>,
 ) {
-    let installed_now = installed.read().next().is_some();
-    if !settings.is_changed() && !installed_now {
+    if !has_world.0 || *role == frame::RuntimeRole::Replay {
+        *sent = None;
         return;
     }
     let (Some(local), Some(inbox)) = (local, inbox.as_deref_mut()) else {
         return;
     };
+    if let Some(link) = link
+        && (link.connection.is_none()
+            || link.assigned_client != Some(local.0)
+            || !link.has_entered_match())
+    {
+        *sent = None;
+        return;
+    }
+    let name = entity_iw4::pack_client_state_name(&settings.player_name);
+    let next = (*generation, local.0, name);
+    if sent.as_ref() == Some(&next) {
+        return;
+    }
     let request_id = seq.allocate();
-    if let Err(error) = inbox.push(
-        local.0,
-        sim::ClientAction::SetName {
-            request_id,
-            name: entity_iw4::pack_client_state_name(&settings.player_name),
-        },
-    ) {
+    if let Err(error) = inbox.push(local.0, sim::ClientAction::SetName { request_id, name }) {
         diag::warn!(
             Console,
             "name: request_id={request_id} not queued — {error}"
         );
+    } else {
+        *sent = Some(next);
     }
 }
 
@@ -298,8 +318,6 @@ fn settings_path(artifacts: &std::path::Path) -> Option<PathBuf> {
         .map(|path| path.join("iw4l/settings.cfg"))
 }
 
-/// Picking a button layout in the controller options rebinds the
-/// controller to it.
 pub(crate) fn apply_pad_layout_setting(
     settings: Res<frame::GameSettings>,
     mut binds: ResMut<KeyBinds>,
@@ -307,7 +325,10 @@ pub(crate) fn apply_pad_layout_setting(
 ) {
     let layout = settings.pad_layout;
     let previous = seen.replace(layout);
-    if previous.is_none() || previous == Some(layout) || layout == frame::GameSettings::PAD_LAYOUT_CUSTOM {
+    if previous.is_none()
+        || previous == Some(layout)
+        || layout == frame::GameSettings::PAD_LAYOUT_CUSTOM
+    {
         return;
     }
     binds.apply_pad_layout(usize::from(layout));
@@ -340,11 +361,17 @@ fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> Strin
         format!("player_name={safe_name}"),
         format!("pad_layout={}", settings.pad_layout),
         format!("pad_stick_layout={}", settings.pad_stick_layout),
-        format!("pad_sensitivity={:.2}", settings.pad_sensitivity),
+        format!("pad_sensitivity_preset={}", settings.pad_sensitivity_preset),
+        format!(
+            "pad_custom_sensitivity={:.3}",
+            settings.pad_custom_sensitivity
+        ),
         format!("pad_ads_sensitivity={:.2}", settings.pad_ads_sensitivity),
         format!("pad_invert={}", settings.pad_invert),
         format!("pad_curve={}", settings.pad_curve),
+        format!("pad_acceleration={}", settings.pad_acceleration),
         format!("pad_aim_assist={}", settings.pad_aim_assist),
+        format!("pad_prompts={}", settings.pad_prompts),
         format!("pad_vibration={}", settings.pad_vibration),
         format!("pad_deadzone_left={:.2}", settings.pad_deadzone_left),
         format!("pad_deadzone_right={:.2}", settings.pad_deadzone_right),
@@ -432,11 +459,20 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
             "player_name" => settings.player_name = value.to_owned(),
             "pad_layout" => parse_into(value, &mut settings.pad_layout),
             "pad_stick_layout" => parse_into(value, &mut settings.pad_stick_layout),
-            "pad_sensitivity" => parse_into(value, &mut settings.pad_sensitivity),
+            "pad_sensitivity" => {
+                if let Ok(old) = value.parse::<f32>() {
+                    settings.pad_custom_sensitivity = old.clamp(1.0, 10.0) / 3.0;
+                    settings.pad_sensitivity_preset = 0;
+                }
+            }
+            "pad_sensitivity_preset" => parse_into(value, &mut settings.pad_sensitivity_preset),
+            "pad_custom_sensitivity" => parse_into(value, &mut settings.pad_custom_sensitivity),
             "pad_ads_sensitivity" => parse_into(value, &mut settings.pad_ads_sensitivity),
             "pad_invert" => parse_into(value, &mut settings.pad_invert),
             "pad_curve" => parse_into(value, &mut settings.pad_curve),
+            "pad_acceleration" => parse_into(value, &mut settings.pad_acceleration),
             "pad_aim_assist" => parse_into(value, &mut settings.pad_aim_assist),
+            "pad_prompts" => parse_into(value, &mut settings.pad_prompts),
             "pad_vibration" => parse_into(value, &mut settings.pad_vibration),
             "pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
             "pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
@@ -449,7 +485,6 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
             warn!("settings bind: {warning}");
         }
     }
-    // Settings saved before controller support have no controller binds.
     if !binds.has_pad_binds() {
         binds.apply_pad_layout(usize::from(settings.pad_layout.min(4)));
     }
@@ -471,6 +506,7 @@ pub(crate) fn native_menu_settings(
     mut shadows: ResMut<render_frontend::prepare::scene::view_parms::SmEnableDvar>,
     mut dof: ResMut<render_frontend::assemble::drawsurf::dof::DofDvars>,
     mut glow: ResMut<render_frontend::assemble::drawsurf::dof::GlowDvars>,
+    mut test_rumble: MessageWriter<frame::TestControllerRumble>,
 ) {
     for command in events.read() {
         if !matches!(command.name.as_str(), "set" | "seta") {
@@ -514,11 +550,22 @@ pub(crate) fn native_menu_settings(
             "ui_bloom" => settings.bloom = value == "1",
             "ui_pad_layout" => parse_into(value, &mut settings.pad_layout),
             "ui_pad_stick_layout" => parse_into(value, &mut settings.pad_stick_layout),
-            "ui_pad_sensitivity" => parse_into(value, &mut settings.pad_sensitivity),
+            "ui_pad_sensitivity_preset" => parse_into(value, &mut settings.pad_sensitivity_preset),
+            "ui_pad_custom_sensitivity" => {
+                parse_into(value, &mut settings.pad_custom_sensitivity);
+                settings.pad_sensitivity_preset = 0;
+            }
             "ui_pad_ads_sensitivity" => parse_into(value, &mut settings.pad_ads_sensitivity),
             "ui_pad_invert" => settings.pad_invert = value == "1",
             "ui_pad_curve" => parse_into(value, &mut settings.pad_curve),
+            "ui_pad_acceleration" => settings.pad_acceleration = value == "1",
             "ui_pad_aim_assist" => parse_into(value, &mut settings.pad_aim_assist),
+            "ui_pad_prompts" => parse_into(value, &mut settings.pad_prompts),
+            "ui_pad_test_rumble" => {
+                if value == "1" {
+                    test_rumble.write(frame::TestControllerRumble);
+                }
+            }
             "ui_pad_vibration" => settings.pad_vibration = value == "1",
             "ui_pad_deadzone_left" => parse_into(value, &mut settings.pad_deadzone_left),
             "ui_pad_deadzone_right" => parse_into(value, &mut settings.pad_deadzone_right),
@@ -547,12 +594,36 @@ pub(crate) fn native_menu_settings(
     dvars.set("ui_r_vsync", if settings.vsync { "1" } else { "0" });
     dvars.set("ui_pad_layout", settings.pad_layout.to_string());
     dvars.set("ui_pad_stick_layout", settings.pad_stick_layout.to_string());
-    dvars.set("ui_pad_sensitivity", settings.pad_sensitivity.to_string());
-    dvars.set("ui_pad_ads_sensitivity", settings.pad_ads_sensitivity.to_string());
+    dvars.set(
+        "ui_pad_sensitivity_preset",
+        settings.pad_sensitivity_preset.to_string(),
+    );
+    dvars.set(
+        "ui_pad_custom_sensitivity",
+        settings.pad_custom_sensitivity.to_string(),
+    );
+    dvars.set(
+        "ui_pad_ads_sensitivity",
+        settings.pad_ads_sensitivity.to_string(),
+    );
     dvars.set("ui_pad_invert", if settings.pad_invert { "1" } else { "0" });
     dvars.set("ui_pad_curve", settings.pad_curve.to_string());
+    dvars.set(
+        "ui_pad_acceleration",
+        if settings.pad_acceleration { "1" } else { "0" },
+    );
     dvars.set("ui_pad_aim_assist", settings.pad_aim_assist.to_string());
-    dvars.set("ui_pad_vibration", if settings.pad_vibration { "1" } else { "0" });
-    dvars.set("ui_pad_deadzone_left", settings.pad_deadzone_left.to_string());
-    dvars.set("ui_pad_deadzone_right", settings.pad_deadzone_right.to_string());
+    dvars.set("ui_pad_prompts", settings.pad_prompts.to_string());
+    dvars.set(
+        "ui_pad_vibration",
+        if settings.pad_vibration { "1" } else { "0" },
+    );
+    dvars.set(
+        "ui_pad_deadzone_left",
+        settings.pad_deadzone_left.to_string(),
+    );
+    dvars.set(
+        "ui_pad_deadzone_right",
+        settings.pad_deadzone_right.to_string(),
+    );
 }

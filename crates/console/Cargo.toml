@@ -6,9 +6,8 @@ license.workspace = true
 description = "Our console: input, parsing, execution, cvar storage, coverage report."
 
 [dependencies]
+master_protocol.workspace = true
 diag.workspace = true
-math_iw4.workspace = true
-dpvs_iw4.workspace = true
 bevy.workspace = true
 frame.workspace = true
 ui.workspace = true
@@ -19,7 +18,6 @@ asset_world.workspace = true
 assets = { path = "../assets" }
 audio = { path = "../audio" }
 input_iw4.workspace = true
-playerstate_iw4.workspace = true
 net = { path = "../net" }
 render = { path = "../render" }
 render_frontend.workspace = true

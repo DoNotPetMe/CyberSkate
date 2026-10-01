@@ -1,5 +1,7 @@
 pub mod adopt;
 pub mod bullet;
+mod shield;
+pub use shield::{ShieldAttachment, ShieldCarrierCollision};
 pub mod bullet_collision;
 mod carrier;
 pub mod collision_census;
@@ -19,6 +21,8 @@ mod mantle_xanim;
 pub mod voxel;
 pub mod match_state;
 mod missile;
+mod missile_guidance;
+pub use missile_guidance::{MissileGuide, MissileTarget};
 mod presence;
 mod remote_missile;
 pub mod script;
@@ -61,10 +65,7 @@ pub use combat::{
     AcceptedShot, Emission, EntityClipKind, PlayerCollisionRepresentation, ShotCollisionGeometry,
     ShotCollisionVerdict, TracePhaseOutput, spread_direction_on_plane, spread_pellet_direction,
 };
-pub use content::{
-    CONTENT_DIGEST_SCHEME, ContentComponents, content_components_v2, content_digest_v0,
-    content_digest_v1, content_digest_v2,
-};
+pub use content::{CONTENT_DIGEST_SCHEME, ContentComponents, content_components, content_digest};
 pub use corpse::{PlayerCorpsePool, PlayerCorpseSlot, level_time_ms};
 pub use damage::{DamageAttempt, DamageOutcome, DamageRefusal, DeathCommit};
 pub use equipment::{
@@ -98,10 +99,10 @@ pub use match_state::{
     ConfigurationChangeRejectReason, DroppedItemAmmo, EntityEventPayload, EntityEventRecord,
     EventAudience, EventRecord, GiveRejectReason, HealthRegenCensus, InputReceipt,
     ItemPickupRecord, KillcamHud, LoadoutSpec, LocationSelection, MENU_COMMAND_TAIL,
-    MatchEndReason, MenuCommand, MenuCommandKind, PelletFxRecord, RadarMode, RemoteMissile,
-    RngDebugMeta, SIM_EVENT_ROSTER, ScriptControls, ScriptDepthOfField, ScriptDvars, ScriptSeat,
-    SimEvent, SimEventRow, SnapshotMeta, UNRELIABLE_SIM_EVENT_COUNT, ViewEffects, VisionChange,
-    sim_event_is_reliable,
+    MatchEndReason, MenuCommand, MenuCommandKind, PelletFxRecord, PersonalClass, RadarMode,
+    RemoteMissile, RngDebugMeta, SIM_EVENT_ROSTER, ScriptBlur, ScriptControls, ScriptDepthOfField,
+    ScriptDvars, ScriptSeat, SimEvent, SimEventRow, SnapshotMeta, UNRELIABLE_SIM_EVENT_COUNT,
+    ViewEffects, VisionChange, is_postfx_dvar, sim_event_is_reliable,
 };
 pub use player_anim_script::{
     AnimConditions, AnimScriptCommand, AnimScriptCondition, AnimScriptItem, PlayerAnimScript,
@@ -139,9 +140,18 @@ pub use world_objects::{
     WorldObjectSnapshot, WorldObjectState, glass_blast_integer_damage,
 };
 
+mod scene_effects;
+mod time_scale;
+pub use scene_effects::{
+    MAX_SCRIPT_EARTHQUAKES, ScriptEarthquake, ScriptFog, ScriptFogParams, ScriptSunFog,
+};
+pub use time_scale::ScriptSlowMotion;
 mod objectives;
 pub use objectives::{
     CompassObjective, CompassVehicle, ObjectiveMatch, ObjectiveState, ScriptEffect,
 };
 
 pub use world::{SimContent, SimContentBuilder, WeaponSetup};
+
+mod script_audio;
+pub use script_audio::{ScriptAmbient, ScriptAudioCommand};

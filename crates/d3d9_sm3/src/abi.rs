@@ -46,6 +46,8 @@ pub struct ConstantSlot {
 pub struct SamplerSlot {
     pub register: u16,
     pub dimension: SamplerTextureDimension,
+
+    pub depth_compare: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

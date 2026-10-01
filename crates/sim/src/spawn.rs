@@ -7,7 +7,6 @@ use trace_iw4::Trace;
 
 use crate::bullet_collision::{MASK_PLAYER_SOLID, PLAYER_MAXS, PLAYER_MINS};
 use crate::identities::MatchRng;
-use crate::input::ClassId;
 use crate::match_state::ClassDef;
 
 pub const SPAWN_IDEAL_DIST: f32 = 1600.0;
@@ -70,12 +69,6 @@ impl Default for MatchBootstrap {
             intermission_view: None,
             airstrike_height: None,
         }
-    }
-}
-
-impl MatchBootstrap {
-    pub fn class(&self, id: ClassId) -> Option<&ClassDef> {
-        self.classes.iter().find(|c| c.id == id)
     }
 }
 

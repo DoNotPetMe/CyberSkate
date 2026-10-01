@@ -176,7 +176,7 @@ pub fn run(root: &Path) -> Res<()> {
     })?;
     host.send("ui_start_match")?;
     for (player, key) in [(&mut host, "HOST_CMDS"), (&mut client, "CLIENT_CMDS")] {
-        let commands = std::env::var(key).unwrap_or_else(|_| "spawn assault".into());
+        let commands = std::env::var(key).unwrap_or_else(|_| "spawn 0".into());
         player.send(&format!("wait world; {commands}"))?;
     }
     println!("Connected. Commands: host <script> | client <script> | both <script> | quit");

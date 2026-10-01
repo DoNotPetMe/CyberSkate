@@ -2,25 +2,6 @@ use asset_game::WeaponAnimSlot;
 
 use crate::{EventResult, ViewmodelController, ViewmodelEvent, WeaponState};
 
-pub mod auth_ws {
-    pub const READY: i32 = 0x0;
-    pub const RAISING: i32 = 0x1;
-    pub const RAISING_ALTSWITCH: i32 = 0x2;
-    pub const DROPPING: i32 = 0x3;
-    pub const DROPPING_QUICK: i32 = 0x4;
-    pub const DROPPING_ALTSWITCH: i32 = 0x5;
-    pub const FIRING: i32 = 0x6;
-    pub const RECHAMBERING: i32 = 0x7;
-    pub const RELOADING: i32 = 0x8;
-    pub const RELOADING_INTERRUPT: i32 = 0x9;
-    pub const RELOAD_START: i32 = 0xA;
-    pub const RELOAD_START_INTERRUPT: i32 = 0xB;
-    pub const RELOAD_END: i32 = 0xC;
-    pub const SPRINT_IN: i32 = 0x17;
-    pub const SPRINT_LOOP: i32 = 0x18;
-    pub const SPRINT_OUT: i32 = 0x19;
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PresentFpvEvent {
     Fire,
@@ -56,11 +37,7 @@ pub struct FpvPoseSample {
     pub idle_weight: f32,
 }
 
-pub fn map_authority_to_fpv(
-    _prev_weaponstate: Option<i32>,
-    _weaponstate: i32,
-    cues: AuthorityFpvCues,
-) -> Vec<PresentFpvEvent> {
+pub fn map_authority_to_fpv(cues: AuthorityFpvCues) -> Vec<PresentFpvEvent> {
     let mut out = Vec::new();
 
     if cues.shot_accepted {
@@ -248,8 +225,6 @@ pub enum WeapAnimEdge {
 #[derive(Clone, Debug, Default)]
 pub struct FpvPresentState {
     pub last_tick: Option<u32>,
-    pub last_weaponstate: Option<i32>,
-    pub last_sprinting: Option<bool>,
 
     pub last_ads_frac: Option<f32>,
 
@@ -263,8 +238,6 @@ pub struct FpvPresentState {
 impl FpvPresentState {
     pub fn clear(&mut self) {
         self.last_tick = None;
-        self.last_weaponstate = None;
-        self.last_sprinting = None;
         self.last_ads_frac = None;
         self.last_weap_anim = None;
         self.last_weap_anim_secondary = None;
@@ -326,10 +299,8 @@ pub fn events_for_authority_tick(
     if present.last_tick == Some(sample.tick) {
         return Vec::new();
     }
-    let events = map_authority_to_fpv(present.last_weaponstate, sample.weaponstate, sample.cues);
+    let events = map_authority_to_fpv(sample.cues);
     present.last_tick = Some(sample.tick);
-    present.last_weaponstate = Some(sample.weaponstate);
-    present.last_sprinting = Some(sample.sprinting);
     present.last_ads_frac = Some(sample.ads_frac);
     events
 }
@@ -394,7 +365,7 @@ pub fn tick_equipped_fpv_with_extra_events(
             }
         }
     }
-    let crate::AdvanceResult { notifies } = equipped.controller.advance(dt_secs);
+    let crate::AdvanceResult { mut notifies } = equipped.controller.advance(dt_secs);
     let ads_frac = sample
         .map(|s| s.ads_frac)
         .or(present.last_ads_frac)
@@ -417,7 +388,11 @@ pub fn tick_equipped_fpv_with_extra_events(
                     report_dispatch_slot(slot, left.dispatch_sz_xanim_index(slot));
                 }
             }
-            let _ = left.advance(dt_secs);
+            for note in left.advance(dt_secs).notifies {
+                if !notifies.contains(&note) {
+                    notifies.push(note);
+                }
+            }
 
             left.apply_ads_overlay_frame(0.0);
         }

@@ -2,8 +2,9 @@ use bevy::prelude::*;
 
 use crate::classes::setup::ClassSlotState;
 use frame::{HostClassLoadouts, HostClassSlot};
+use sim::match_state::PERSONAL_CLASS_SLOTS;
 
-#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionClassStore {
     pub slots: Vec<ClassSlotState>,
 
@@ -11,31 +12,58 @@ pub struct SessionClassStore {
     pub selected: usize,
 }
 
-impl Default for SessionClassStore {
-    fn default() -> Self {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
-        Self::from_showcase(seed)
-    }
-}
-
 impl SessionClassStore {
-    pub fn from_showcase(seed: u64) -> Self {
-        Self {
-            slots: frame::pick_showcase(seed, 5)
+    pub fn from_showcase(seed: u64, registry: &asset_game::WeaponRegistry) -> Self {
+        let combat = session::combat_table::from_registry(registry, None);
+        let equipment = session::combat_table::equipment_from_registry(registry);
+        let available = |slot: &HostClassSlot| {
+            let row = session::ClassRow::from(slot);
+            !session::project_class(0, &row, registry, &combat, &equipment)
+                .def
+                .locked
+        };
+        let mut slots: Vec<HostClassSlot> =
+            frame::pick_showcase(seed, frame::showcase_classes().len())
                 .into_iter()
-                .map(ClassSlotState::from_preset)
-                .collect(),
+                .map(HostClassSlot::from)
+                .filter(&available)
+                .take(PERSONAL_CLASS_SLOTS)
+                .collect();
+        if slots.len() < PERSONAL_CLASS_SLOTS {
+            for primary in ["m4", "mp5k", "m16", "ak47", "rpd"] {
+                let slot = HostClassSlot {
+                    name: format!("custom_{}", slots.len() + 1),
+                    primary: format!("iw4:weapon/{primary}_mp"),
+                    primary_attachments: Vec::new(),
+                    secondary: "iw4:weapon/usp_mp".into(),
+                    secondary_attachments: Vec::new(),
+                    lethal: "iw4:weapon/frag_grenade_mp".into(),
+                    tactical: "iw4:weapon/flash_grenade_mp".into(),
+                    perks: [
+                        "specialty_fastreload".into(),
+                        "specialty_bulletdamage".into(),
+                        "specialty_bulletaccuracy".into(),
+                    ],
+                    deathstreak: "specialty_copycat".into(),
+                };
+                if available(&slot) {
+                    slots.push(slot);
+                }
+                if slots.len() == PERSONAL_CLASS_SLOTS {
+                    break;
+                }
+            }
+        }
+        if !slots.is_empty() {
+            let available = slots.clone();
+            while slots.len() < PERSONAL_CLASS_SLOTS {
+                slots.push(available[slots.len() % available.len()].clone());
+            }
+        }
+        Self {
+            slots: slots.iter().map(ClassSlotState::from_host_slot).collect(),
             equipped: None,
             selected: 0,
-        }
-    }
-
-    pub fn commit_equip(&mut self, selected: usize) {
-        if selected < self.slots.len() {
-            self.selected = selected;
-            self.equipped = Some(selected);
         }
     }
 
@@ -150,6 +178,9 @@ fn decode_slots(text: &str) -> Option<Vec<ClassSlotState>> {
         else {
             return None;
         };
+        if slots.len() == PERSONAL_CLASS_SLOTS {
+            return None;
+        }
         slots.push(ClassSlotState {
             name: (*name).to_owned(),
             primary: (*primary).to_owned(),
@@ -172,6 +203,7 @@ pub(crate) fn load_class_store(
     identity: Option<Res<frame::LaunchIdentity>>,
     mut file: ResMut<ClassStoreFile>,
     mut store: ResMut<SessionClassStore>,
+    catalog: Res<crate::ClassLoadoutCatalog>,
 ) {
     if file.loaded {
         return;
@@ -182,17 +214,30 @@ pub(crate) fn load_class_store(
     if identity.artifacts.as_os_str().is_empty() {
         return;
     }
+    let Some(registry) = catalog.resolver.0.as_deref() else {
+        return;
+    };
     let path = identity.artifacts.join("profile").join("classes.txt");
     file.loaded = true;
+    let generate = || {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+        SessionClassStore::from_showcase(seed, registry)
+    };
     match std::fs::read_to_string(&path) {
         Ok(text) => match decode_slots(&text) {
             Some(slots) => {
                 diag::info!(Ui, "classes: {} read from {}", slots.len(), path.display());
                 file.written = Some(encode_slots(&slots));
                 store.slots = slots;
+                for slot in &mut store.slots {
+                    slot.lock_reason = catalog.validate_class(slot).err();
+                }
                 store.selected = store.selected.min(store.slots.len().saturating_sub(1));
             }
             None => {
+                *store = generate();
                 diag::warn!(
                     Ui,
                     "classes: {} is not a class file this build reads; file preserved",
@@ -201,8 +246,11 @@ pub(crate) fn load_class_store(
                 return;
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            *store = generate();
+        }
         Err(error) => {
+            *store = generate();
             diag::warn!(
                 Ui,
                 "classes: cannot read {}: {error}; file preserved",
@@ -234,8 +282,13 @@ fn write_class_file(path: &std::path::Path, contents: &str) -> std::io::Result<(
     result
 }
 
-pub(crate) fn save_class_store(store: Res<SessionClassStore>, mut file: ResMut<ClassStoreFile>) {
+pub(crate) fn save_class_store(
+    store: Res<SessionClassStore>,
+    catalog: Res<crate::ClassLoadoutCatalog>,
+    mut file: ResMut<ClassStoreFile>,
+) {
     if !file.loaded
+        || store.slots.is_empty()
         || file
             .retry_at
             .is_some_and(|at| std::time::Instant::now() < at)
@@ -251,6 +304,20 @@ pub(crate) fn save_class_store(store: Res<SessionClassStore>, mut file: ResMut<C
     let contents = encode_slots(&store.slots);
     if file.written.as_ref() == Some(&contents) {
         return;
+    }
+    let saved = file.written.as_deref().and_then(decode_slots);
+    for (index, slot) in store.slots.iter().enumerate() {
+        if let Err(reason) = catalog.validate_class(slot) {
+            let unchanged = saved
+                .as_ref()
+                .and_then(|slots| slots.get(index))
+                .is_some_and(|old| HostClassSlot::from(old) == HostClassSlot::from(slot));
+            if !unchanged {
+                file.retry_at = None;
+                diag::warn!(Ui, "classes: not saved: {reason}");
+                return;
+            }
+        }
     }
     match write_class_file(&path, &contents) {
         Ok(()) => {

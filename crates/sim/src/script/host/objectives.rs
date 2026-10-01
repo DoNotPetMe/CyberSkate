@@ -163,12 +163,40 @@ pub(crate) fn publish(world: &mut World) {
             (name.clone(), value)
         })
         .chain(engine)
+        .chain(
+            runtime
+                .dvars
+                .iter()
+                .filter(|(name, _)| {
+                    crate::is_postfx_dvar(name) && !runtime.server_info.contains(*name)
+                })
+                .map(|(name, value)| (name.clone(), value.clone())),
+        )
         .collect();
     let game_end_time = runtime.engine.game_end_time;
+    let slow_motion = runtime.engine.slow_motion;
+    let ambient = runtime
+        .program
+        .is_some()
+        .then(|| runtime.engine.ambient.clone().unwrap_or_default());
+    let ac130_ambient = runtime
+        .program
+        .is_some()
+        .then(|| runtime.engine.ac130_ambient.clone().unwrap_or_default());
+    let rumble_aliases = runtime
+        .precached
+        .iter()
+        .filter(|((kind, _), _)| *kind == "rumble")
+        .map(|((_, name), index)| (*index, name.clone()))
+        .collect();
     let scripted_effects = runtime.program.is_some();
     let naked_vision = runtime.engine.naked_vision.clone();
     let thermal_vision = runtime.engine.thermal_vision.clone();
     let missile_vision = runtime.engine.missile_vision.clone();
+    let night_vision = runtime.engine.night_vision.clone();
+    let pain_vision = runtime.engine.pain_vision.clone();
+    let fog = runtime.engine.fog;
+    let now = crate::level_time_ms(world.resource::<crate::step::StepRequest>().tick);
     let rows: Vec<(u64, super::entities::PersistentFx)> = runtime
         .engine
         .effects
@@ -181,6 +209,8 @@ pub(crate) fn publish(world: &mut World) {
         .engine
         .effects
         .retain(|id, _| rows.iter().any(|(row, _)| row == id));
+    runtime.engine.earthquakes.retain(|quake| quake.active(now));
+    let earthquakes = runtime.engine.earthquakes.clone();
     let mut frame = FrameWorld::from_world(world);
     let effects = rows
         .into_iter()
@@ -201,10 +231,18 @@ pub(crate) fn publish(world: &mut World) {
         vehicles,
         server_info,
         game_end_time,
+        slow_motion,
+        ambient,
+        ac130_ambient,
+        rumble_aliases,
         scripted_effects,
         effects,
+        fog,
+        earthquakes,
         naked_vision,
         thermal_vision,
         missile_vision,
+        night_vision,
+        pain_vision,
     };
 }

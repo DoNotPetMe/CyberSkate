@@ -270,8 +270,8 @@ pub(crate) fn update_iris(
 
     let inner_left = (cx + xhair.0 + layout.inner_x * factor).round();
     let inner_top = (cy + xhair.1 + layout.inner_y * factor).round();
-    let inner_w = (layout.inner_w * factor).round();
-    let inner_h = (layout.inner_h * factor).round();
+    let inner_right = (cx + xhair.0 + (layout.inner_x + layout.inner_w) * factor).round();
+    let inner_bottom = (cy + xhair.1 + (layout.inner_y + layout.inner_h) * factor).round();
     for (mut node, mut image_node, slot) in overlay.iter_mut() {
         let Some(quad) = layout.live_quads().get(usize::from(slot.0)) else {
             adopt_display(&mut node, Display::None);
@@ -280,10 +280,14 @@ pub(crate) fn update_iris(
             continue;
         };
         adopt_display(&mut node, Display::Flex);
-        node.left = Val::Px(cx + xhair.0 + quad.x * factor);
-        node.top = Val::Px(cy + xhair.1 + quad.y * factor);
-        node.width = Val::Px(quad.w * factor);
-        node.height = Val::Px(quad.h * factor);
+        let left = (cx + xhair.0 + quad.x * factor).round();
+        let top = (cy + xhair.1 + quad.y * factor).round();
+        let right = (cx + xhair.0 + (quad.x + quad.w) * factor).round();
+        let bottom = (cy + xhair.1 + (quad.y + quad.h) * factor).round();
+        node.left = Val::Px(left);
+        node.top = Val::Px(top);
+        node.width = Val::Px(right - left);
+        node.height = Val::Px(bottom - top);
         image_node.image = handle.clone();
         image_node.color = Color::srgba(1.0, 1.0, 1.0, alpha);
         image_node.rect = None;
@@ -305,19 +309,25 @@ pub(crate) fn update_iris(
         f32::from(fill.rgba[2]) / 255.0,
         alpha,
     );
+    let image = images.get(&handle).expect("overlay image was loaded");
+    let quad = layout.quads[0];
+    // Back the outer texture texel and its linear-filter footprint with the frame fill.
+    let frame_x = (quad.w * factor * 1.5 / image.width() as f32).ceil();
+    let frame_y = (quad.h * factor * 1.5 / image.height() as f32).ceil();
+    let fill_left = (inner_left + frame_x).clamp(0.0, scale.width());
+    let fill_right = (inner_right - frame_x).clamp(fill_left, scale.width());
+    let fill_top = (inner_top + frame_y).clamp(0.0, scale.height());
+    let fill_bottom = (inner_bottom - frame_y).clamp(fill_top, scale.height());
+    let fill_width = fill_right - fill_left;
     let screen_w = scale.width().round();
     let screen_h = scale.height().round();
-    let inner_right = inner_left + inner_w;
-    let inner_bottom = inner_top + inner_h;
     for (mut node, mut image_node, mut bg, strip) in letterbox.iter_mut() {
         let placed = match strip.0 {
-            0 if inner_left > 0.0 => Some((0.0, 0.0, inner_left, screen_h)),
-            1 if screen_w > inner_right => {
-                Some((inner_right, 0.0, screen_w - inner_right, screen_h))
-            }
-            2 if inner_top > 0.0 => Some((inner_left, 0.0, inner_w, inner_top)),
-            3 if screen_h > inner_bottom => {
-                Some((inner_left, inner_bottom, inner_w, screen_h - inner_bottom))
+            0 if fill_left > 0.0 => Some((0.0, 0.0, fill_left, screen_h)),
+            1 if screen_w > fill_right => Some((fill_right, 0.0, screen_w - fill_right, screen_h)),
+            2 if fill_top > 0.0 => Some((fill_left, 0.0, fill_width, fill_top)),
+            3 if screen_h > fill_bottom => {
+                Some((fill_left, fill_bottom, fill_width, screen_h - fill_bottom))
             }
             _ => None,
         };

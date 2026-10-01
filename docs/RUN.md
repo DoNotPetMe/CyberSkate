@@ -5,7 +5,7 @@ Two players through the master: [`make duo`](DUO.md).
 
 ```bash
 set -a; . ./.env; set +a          # IW4L_GAMES; DISPLAY=:0 if the session has none
-make map mp_boneyard CMDS='spawn assault; wait 2s; quit'
+make map mp_boneyard CMDS='spawn 0; wait 2s; quit'
 cargo run --profile play -p launcher -- map iw5:mp_overwatch --cmds '…'
 ```
 
@@ -18,7 +18,7 @@ scenario`, `chaos`, `bench` ([`BENCH.md`](BENCH.md)), `bench-live`, `lifecycle-*
 **GSC controls the start freeze.** `freezecontrols` constrains authority movement;
 snapshots carry the same constraints into client prediction and command replay.
 Wait for the loaded mode's countdown, or use the debug command:
-`wait world; spawn assault; force_match_start; wait 1s; …`.
+`wait world; spawn 0; force_match_start; wait 1s; …`.
 Firing, hit and decal probes must start after the countdown releases the player.
 
 **Sync by default.** Ritual `wait`s are unnecessary: a command holds the FIFO
@@ -51,15 +51,23 @@ on host and clients — the host records authority, a client the snapshots it
 received plus its own presented state; `demo LATEST` plays it back.
 
 * ADS is `hold +speed_throw`, not `+speed`;
+* Hold Shift (`+breath_sprint`) or bind `+holdbreath` to steady eligible sights
+  at full ADS. Breath lasts 4.5 seconds; releasing or exhausting it requires recovery.
 * Aim binding: `bind MOUSE2 +speed_throw` aims only while held;
   `bind MOUSE2 +toggleads_throw` toggles aim on each press. Both are available
   under Options → Controls → Actions, and the chosen bind is saved in settings.
 * bolt action (`fire_type=1`): `hold +attack` is **one** shot, and a full
   magazine will not reload itself (`press +attack` ×N, then `press +reload`);
 * `look` without `LookState` only writes `ps.viewangles` — no aiming;
-* `give` takes a namespace: `give t5:weapon/psg1_acog`, `give iw5:weapon/msr`.
+* Use (`+activate` or `+usereload`) retrieves your settled C4, claymores and
+  deployable gadgets when there is room in their equipment ammo slot.
+* `give` searches one completion list: `give ammo`, `give killstreak/uav`, or `give weapon/iw5:msr [attachment...]`. Search by any part of the name, then accept the suggested item.
+* `give killstreak/care_package` and `give killstreak/pave_low` acquire rewards without activating them. Available familiar names appear alongside script names in autocomplete.
+* `give ammo` refills carried reserves and equipment; reload magazines normally. Supply commands require a live player and a host allowing debug actions.
+* `bot` hints follow the subcommand: counts, on/off, current bot IDs, weapons, and `tp … above`.
 * custom classes live in `iw4l-artifacts/profile/classes.txt` (one tab-separated
-  row per class); delete it to get the presets back.
+  row per class); `spawn 0` selects the first slot. Delete the file to generate
+  five available classes again.
 
 Video settings include brightness (50–150%, neutral 100%) and FOV (65–120°)
 sliders. Drag with the mouse or use Left/Right on the focused slider; the value

@@ -4,20 +4,13 @@ use crate::frame::FrameWorld;
 use crate::script::{Namespace, NativeRegistry, Runtime, Value};
 use bevy_ecs::prelude::World;
 use hud_iw4::{
-    HE_TYPE_MATERIAL, HE_TYPE_PLAYERNAME, HE_TYPE_TEXT, HE_TYPE_VALUE, HE_TYPE_WAYPOINT, HudElem,
-    align_org, align_screen, color_rgba, flags, hud_elem_lerp_font_scale, hud_elem_movement_frac,
-    hud_elem_scale_frac, lerp_hud_colors, unpack_rgba,
+    HE_TYPE_CLOCK_DOWN, HE_TYPE_CLOCK_UP, HE_TYPE_MATERIAL, HE_TYPE_PLAYERNAME,
+    HE_TYPE_TENTHS_TIMER_DOWN, HE_TYPE_TENTHS_TIMER_STATIC, HE_TYPE_TENTHS_TIMER_UP, HE_TYPE_TEXT,
+    HE_TYPE_TIMER_DOWN, HE_TYPE_TIMER_STATIC, HE_TYPE_TIMER_UP, HE_TYPE_VALUE, HE_TYPE_WAYPOINT,
+    HudElem, align_org, align_screen, color_rgba, flags, hud_elem_lerp_font_scale,
+    hud_elem_movement_frac, hud_elem_scale_frac, lerp_hud_colors, unpack_rgba,
 };
 use playerstate_iw4::ENTITYNUM_NONE;
-
-const HE_TYPE_TIMER_DOWN: i32 = 5;
-const HE_TYPE_TIMER_UP: i32 = 6;
-const HE_TYPE_TIMER_STATIC: i32 = 7;
-const HE_TYPE_TENTHS_TIMER_DOWN: i32 = 8;
-const HE_TYPE_TENTHS_TIMER_UP: i32 = 9;
-const HE_TYPE_TENTHS_TIMER_STATIC: i32 = 10;
-const HE_TYPE_CLOCK_DOWN: i32 = 11;
-const HE_TYPE_CLOCK_UP: i32 = 12;
 
 const FONTS: &[&str] = &[
     "default",
@@ -408,6 +401,64 @@ fn print(
         template,
         arg,
     });
+    Ok(Value::Undefined)
+}
+
+pub(crate) fn chat(
+    world: &mut World,
+    sender: u32,
+    team_only: bool,
+    args: &[Value],
+) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err("chat expects one message".into());
+    }
+    let message = arg(args, 0)?;
+    if !matches!(message, Value::String(_) | Value::LocalizedString(_)) {
+        return Err("chat message must be a string".into());
+    }
+    let name =
+        super::players::load_field(world, sender, "name").ok_or("chat sender is not connected")?;
+    let text = format!(
+        "{}{}{}",
+        print_text(world, &name),
+        crate::HUD_PRINT_ARG_SEPARATOR,
+        print_text(world, message)
+    );
+    let recipients = if team_only {
+        let clients: Vec<u32> = world
+            .resource::<Runtime>()
+            .players
+            .keys()
+            .copied()
+            .collect();
+        let frame = FrameWorld::from_world(world);
+        let team = frame
+            .client_meta(crate::ClientId(sender))
+            .ok_or("chat sender is not connected")?
+            .client_state_team;
+        clients
+            .into_iter()
+            .filter(|client| {
+                frame
+                    .client_meta(crate::ClientId(*client))
+                    .is_some_and(|meta| meta.client_state_team == team)
+            })
+            .map(|client| Some(crate::ClientId(client)))
+            .collect::<Vec<_>>()
+    } else {
+        vec![None]
+    };
+    let template = format!("{}&&1^7: &&2", crate::HUD_STRING_PLAIN);
+    let mut frame = FrameWorld::from_world(world);
+    for recipient in recipients {
+        frame.push_print(crate::PendingPrint {
+            recipient,
+            bold: false,
+            template: template.clone(),
+            arg: text.clone(),
+        });
+    }
     Ok(Value::Undefined)
 }
 

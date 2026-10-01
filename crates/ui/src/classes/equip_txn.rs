@@ -16,6 +16,7 @@ pub struct EquipTxnWatch {
 pub fn apply_pending_class_equip(
     mut pending: ResMut<PendingClassEquip>,
     store: Res<SessionClassStore>,
+    weapons: Option<Res<assets::PreparedWeapons>>,
     mut actions: ResMut<ClientActionInbox>,
     mut watch: ResMut<EquipTxnWatch>,
     mut phase: ResMut<ClassSelectPhase>,
@@ -38,17 +39,33 @@ pub fn apply_pending_class_equip(
             "class equip: dropped request_id={} — {reason}",
             req.request_id
         );
+        reject_class_equip(&mut phase, &mut status, req.request_id, reason);
         return;
     }
     let index = req.class_index;
-    if store.slots.get(index).is_none() {
-        diag::info!(
-            Ui,
-            "class equip: class index {index} out of range (request_id={})",
-            req.request_id
+    let Some(slot) = store.slots.get(index) else {
+        reject_class_equip(
+            &mut phase,
+            &mut status,
+            req.request_id,
+            "Class is unavailable".to_owned(),
         );
         return;
-    }
+    };
+    let resolved = weapons
+        .as_ref()
+        .ok_or_else(|| "Weapon catalog is not ready".to_owned())
+        .and_then(|weapons| {
+            let row = session::ClassRow::from(&frame::HostClassSlot::from(slot));
+            session::loadout::resolve_personal_class(&row, &weapons.0)
+        });
+    let loadout = match resolved {
+        Ok(loadout) => loadout,
+        Err(reason) => {
+            reject_class_equip(&mut phase, &mut status, req.request_id, reason);
+            return;
+        }
+    };
 
     if let Err(error) = actions.push(
         local.0,
@@ -56,6 +73,7 @@ pub fn apply_pending_class_equip(
             request_id: req.request_id,
             class_id: ClassId(index as u32),
             revision: 1,
+            loadout,
         },
     ) {
         diag::info!(
@@ -133,6 +151,7 @@ pub fn sync_class_change_allowed(
 }
 
 pub fn resolve_class_equip_transaction(
+    mut store: ResMut<SessionClassStore>,
     mut phase: ResMut<ClassSelectPhase>,
     mut overlay: ResMut<ClassSelectOverlayOpen>,
     mut status: ResMut<ClassSelectStatus>,
@@ -164,7 +183,7 @@ pub fn resolve_class_equip_transaction(
             SimEvent::ClassAccepted {
                 request_id: rid, ..
             } if rid == request_id => {
-                if accept_class_equip(&mut phase, &mut overlay, request_id) {
+                if accept_class_equip(&mut store, &mut phase, &mut overlay, request_id) {
                     diag::info!(
                         Ui,
                         "class select: reliable Accept request_id={request_id} (overlay closed)"
@@ -195,6 +214,7 @@ pub(crate) fn register_equip_systems(app: &mut App) {
             sync_class_change_allowed,
             apply_pending_class_equip,
         )
+            .chain()
             .in_set(ClientSet::Present),
     )
     .add_systems(
@@ -209,9 +229,16 @@ fn consume_class_select_handoff(
     mut handoff: ResMut<frame::ClassSelectHandoff>,
     mut catalog: ResMut<crate::ClassLoadoutCatalog>,
     mut store: ResMut<SessionClassStore>,
+    weapons: Option<Res<assets::PreparedWeapons>>,
 ) {
     if !handoff.pending {
         return;
+    }
+    if catalog.resolver.0.is_none() {
+        let Some(weapons) = weapons else {
+            return;
+        };
+        *catalog = crate::ClassLoadoutCatalog::from_weapon_registry(weapons.0.clone());
     }
     catalog.revision = catalog.revision.wrapping_add(1);
     catalog.primary = std::mem::take(&mut handoff.primary);
@@ -251,6 +278,7 @@ fn publish_signon_class_status(
 }
 
 fn reset_equip_transaction(
+    mut store: ResMut<SessionClassStore>,
     mut torn: MessageReader<frame::MatchTornDown>,
     mut watch: ResMut<EquipTxnWatch>,
     mut pending: ResMut<PendingClassEquip>,
@@ -261,6 +289,7 @@ fn reset_equip_transaction(
         return;
     }
     torn.clear();
+    store.equipped = None;
     *watch = EquipTxnWatch::default();
     pending.0 = None;
     *phase = ClassSelectPhase::default();

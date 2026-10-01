@@ -25,7 +25,14 @@ pub(crate) fn player_object(world: &World, client: u32) -> Value {
 
 pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::script_player::Hit) {
     let victim = player_object(world, hit.victim.0);
-    if victim == Value::Undefined {
+    let Value::Object(object) = victim else {
+        return;
+    };
+    let runtime = world.resource::<Runtime>();
+    if !runtime.entities[&object].accepts_damage(hit.flags)
+        || runtime.engine.players_ignore_radius_damage
+            && hit.flags & crate::script_player::IDFLAGS_RADIUS != 0
+    {
         return;
     }
     let attacker = match hit.attacker.map(|a| player_object(world, a.0)) {
@@ -70,6 +77,19 @@ fn world_entity(world: &World) -> Value {
         .engine
         .world
         .map_or(Value::Undefined, Value::Object)
+}
+
+pub(crate) fn damage_entity(world: &World, value: Option<&Value>) -> Value {
+    let runtime = world.resource::<Runtime>();
+    match value {
+        Some(Value::Object(object))
+            if runtime.entities.contains_key(object)
+                || runtime.player_client(*object).is_some() =>
+        {
+            Value::Object(*object)
+        }
+        _ => world_entity(world),
+    }
 }
 
 fn projectile_entity(
@@ -299,6 +319,13 @@ pub(crate) fn stand_in_for(world: &mut World, slot: usize, weapon: u32) -> Optio
     if setup.realm == realm {
         return None;
     }
+    if realm == crate::script::Realm::Iw4
+        && frame
+            .weapon_combat_row(weapon)
+            .is_some_and(|facts| facts.weap_type == weapon_iw4::WEAPTYPE_SHIELD)
+    {
+        return frame.weapon_index_by_script_name("riotshield_mp");
+    }
     let stand_ins = if realm == crate::script::Realm::T5 {
         T5_STAND_INS
     } else {
@@ -307,15 +334,14 @@ pub(crate) fn stand_in_for(world: &mut World, slot: usize, weapon: u32) -> Optio
     frame.weapon_index_by_script_name(stand_ins[slot])
 }
 
-fn bridge_class_weapon(world: &mut World, client: u32, slot: usize, weapon: u32) -> u32 {
+fn bridge_class_weapon(world: &mut World, client: u32, slot: usize, weapon: u32) {
     let Some(stand_in) = stand_in_for(world, slot, weapon) else {
-        return weapon;
+        return;
     };
     let mut runtime = world.resource_mut::<Runtime>();
     let bridge = runtime.weapon_bridge.entry(client).or_default();
     bridge.retain(|(from, _)| *from != stand_in);
     bridge.push((stand_in, weapon));
-    stand_in
 }
 
 pub(crate) fn bridged_weapon(world: &World, client: u32, weapon: u32) -> u32 {
@@ -336,7 +362,23 @@ pub(crate) fn script_weapon(world: &World, client: u32, weapon: u32) -> u32 {
         .map_or(weapon, |(stand_in, _)| *stand_in)
 }
 
+pub(crate) fn personal_class(
+    world: &World,
+    client: u32,
+    class: crate::ClassId,
+) -> Option<crate::ClassDef> {
+    world
+        .resource::<Runtime>()
+        .personal_classes
+        .get(&(client, class.0))
+        .cloned()
+}
+
 pub(crate) fn choose_class(world: &mut World, client: u32, class: &crate::ClassDef) {
+    world
+        .resource_mut::<Runtime>()
+        .personal_classes
+        .insert((client, class.id.0), class.clone());
     let realm = world
         .resource::<Runtime>()
         .program
@@ -346,17 +388,30 @@ pub(crate) fn choose_class(world: &mut World, client: u32, class: &crate::ClassD
         .resource_mut::<Runtime>()
         .weapon_bridge
         .remove(&client);
+    bridge_class_weapon(world, client, 0, class.primary);
+    bridge_class_weapon(world, client, 1, class.secondary);
     if realm == Some(crate::script::Realm::T5) {
-        bridge_class_weapon(world, client, 0, class.primary);
-        bridge_class_weapon(world, client, 1, class.secondary);
         if let Some(response) = t5_class_response(class.id) {
             answer_menu(world, client, CLASS_MENU, &response);
         }
         return;
     }
+    let data = class_profile_data(world, class);
+    push_answer(
+        world,
+        client,
+        MenuAnswer {
+            menu: CLASS_MENU.into(),
+            response: format!("custom{}", class.id.0 as usize % 10 + 1).into(),
+            data,
+        },
+    );
+}
+
+fn class_profile_data(world: &mut World, class: &crate::ClassDef) -> Vec<(String, Value)> {
     let weapons = [
-        bridge_class_weapon(world, client, 0, class.primary),
-        bridge_class_weapon(world, client, 1, class.secondary),
+        stand_in_for(world, 0, class.primary).unwrap_or(class.primary),
+        stand_in_for(world, 1, class.secondary).unwrap_or(class.secondary),
     ];
     let index = class.id.0 as usize % 10;
     let frame = FrameWorld::from_world(world);
@@ -417,15 +472,7 @@ pub(crate) fn choose_class(world: &mut World, client: u32, class: &crate::ClassD
         tactical.strip_suffix("_mp").unwrap_or(&tactical),
     );
 
-    push_answer(
-        world,
-        client,
-        MenuAnswer {
-            menu: CLASS_MENU.into(),
-            response: format!("custom{}", index + 1).into(),
-            data,
-        },
-    );
+    data
 }
 
 fn menu_kind(menu: &str) -> Option<bool> {
@@ -469,11 +516,15 @@ fn deliver_answers(world: &mut World, client: u32) {
     let Some(slot) = runtime.players.get(&client) else {
         return;
     };
-    let Some(next) = runtime.menu_answers.get(&client).and_then(|q| q.front()) else {
+    if runtime
+        .menu_answers
+        .get(&client)
+        .is_none_or(VecDeque::is_empty)
+    {
         return;
-    };
+    }
     let in_game = matches!(&*slot.sessionstate, "playing" | "dead");
-    if slot.menu.is_none() && !(in_game && &*next.menu == CLASS_MENU) {
+    if slot.menu.is_none() && !in_game {
         return;
     }
     let object = slot.object;
@@ -506,9 +557,11 @@ pub(crate) struct PlayerSlot {
     pub presented: BTreeMap<&'static str, Vec<Value>>,
     pub perks: std::collections::BTreeSet<Arc<str>>,
     pub spectate: BTreeMap<Arc<str>, bool>,
+    pub spectator: super::spectators::Spectator,
     pub seat: crate::ScriptSeat,
     pub weapon: u32,
     pub switching: bool,
+    pub last_stand_until_ms: Option<i64>,
     pub has_radar: bool,
     pub radar_mode: crate::RadarMode,
     pub radar_blocked: bool,
@@ -546,9 +599,11 @@ impl PlayerSlot {
             presented: BTreeMap::new(),
             perks: Default::default(),
             spectate: BTreeMap::new(),
+            spectator: Default::default(),
             seat: crate::ScriptSeat::default(),
             weapon: 0,
             switching: false,
+            last_stand_until_ms: None,
             has_radar: false,
             radar_mode: crate::RadarMode::Normal,
             radar_blocked: false,
@@ -562,12 +617,12 @@ pub(crate) fn script_seats(world: &World) -> Vec<(ClientId, crate::ScriptSeat)> 
         .resource::<Runtime>()
         .players
         .iter()
-        .filter(|(_, slot)| {
-            &*slot.sessionstate == "spectator"
-                && slot.seat.archive_ms > 0
-                && slot.seat.spectator_client >= 0
+        .filter(|(_, slot)| &*slot.sessionstate == "spectator" && slot.spectator.target.is_some())
+        .map(|(client, slot)| {
+            let mut seat = slot.seat;
+            seat.spectator_client = slot.spectator.target.unwrap() as i32;
+            (ClientId(*client), seat)
         })
-        .map(|(client, slot)| (ClientId(*client), slot.seat))
         .collect()
 }
 
@@ -654,6 +709,14 @@ pub(crate) fn apply_disconnects(world: &mut World) {
 }
 
 pub(crate) fn disconnect_player(world: &mut World, client: u32) {
+    super::triggers::release_client_claims(world, client);
+    {
+        let mut runtime = world.resource_mut::<Runtime>();
+        runtime
+            .personal_classes
+            .retain(|(owner, _), _| *owner != client);
+        runtime.weapon_bridge.remove(&client);
+    }
     let Some(slot) = world.resource::<Runtime>().players.get(&client).cloned() else {
         return;
     };
@@ -716,6 +779,16 @@ pub(crate) fn sync_players(world: &mut World) {
             }
             Some(_) => {}
             None => {
+                let classes: Vec<_> = world
+                    .resource::<Runtime>()
+                    .personal_classes
+                    .range((client, 0)..=(client, u32::MAX))
+                    .map(|(_, class)| class.clone())
+                    .collect();
+                let mut data = BTreeMap::new();
+                for class in &classes {
+                    data.extend(class_profile_data(world, class));
+                }
                 let mut runtime = world.resource_mut::<Runtime>();
                 let object = match runtime.create_player(client) {
                     Ok(object) => object,
@@ -732,7 +805,9 @@ pub(crate) fn sync_players(world: &mut World) {
                         return;
                     }
                 };
-                runtime.players.insert(client, PlayerSlot::new(object));
+                let mut slot = PlayerSlot::new(object);
+                slot.data = data;
+                runtime.players.insert(client, slot);
                 let kept = runtime.restored_pers.remove(&client);
                 let pers = match kept {
                     Some(kept) => super::restart::attach(&mut runtime, kept),
@@ -754,7 +829,7 @@ pub(crate) fn sync_players(world: &mut World) {
     settle_deaths(world);
 }
 
-fn team_name(team: i32) -> &'static str {
+pub(crate) fn team_name(team: i32) -> &'static str {
     match team {
         entity_iw4::TEAM_AXIS => "axis",
         entity_iw4::TEAM_ALLIES => "allies",
@@ -937,8 +1012,11 @@ pub(crate) fn store_field(
                 }
             }
         }
-        "sessionteam" => {
+        "sessionteam" | "team" => {
             let Value::String(team) = value else {
+                if name == "team" {
+                    return Ok(false);
+                }
                 return Err("sessionteam takes a string".into());
             };
             let team = match &**team {
@@ -946,9 +1024,18 @@ pub(crate) fn store_field(
                 "allies" => entity_iw4::TEAM_ALLIES,
                 "spectator" => entity_iw4::TEAM_SPECTATOR,
                 "none" => entity_iw4::TEAM_FREE,
+                _ if name == "team" => return Ok(false),
                 other => return Err(format!("invalid sessionteam '{other}'")),
             };
             let mut frame = FrameWorld::from_world(world);
+            let team = if name == "team"
+                && !frame.bootstrap_ref().kind.is_team()
+                && team != entity_iw4::TEAM_SPECTATOR
+            {
+                entity_iw4::TEAM_FREE
+            } else {
+                team
+            };
             if frame.client_meta(id).is_some() {
                 let meta = frame.client_meta_mut(id);
                 meta.client_state_team = team;
@@ -963,7 +1050,7 @@ pub(crate) fn store_field(
         "name" => return Err("player field name is read-only".into()),
         _ => return Ok(false),
     }
-    Ok(true)
+    Ok(name != "team")
 }
 
 const PM_TYPE_NORMAL: i32 = 0;

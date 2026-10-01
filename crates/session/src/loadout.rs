@@ -79,15 +79,13 @@ pub fn authoritative_class_lock_reason(
             append_lock_reason(&mut reason, format!("{name}:validated.missing_profile"));
         }
     }
-    for (name, id) in names[2..].iter().zip(&ids[2..]) {
+    for (slot, (name, id)) in names[2..].iter().zip(&ids[2..]).enumerate() {
         if *id == 0 {
             continue;
         }
-        if !equipment
-            .get(*id as usize)
-            .copied()
-            .is_some_and(sim::EquipmentRuntimeFacts::is_offhand)
-        {
+        if !equipment.get(*id as usize).copied().is_some_and(|facts| {
+            facts.is_offhand() && matches!((slot, facts.offhand_class), (0, 1 | 4 | 5) | (1, 2 | 3))
+        }) {
             append_lock_reason(&mut reason, format!("{name}:offhand.missing_runtime_facts"));
         }
     }
@@ -118,52 +116,79 @@ pub fn project_class(
     combat: &[weapon_iw4::WeaponCombatFacts],
     equipment: &[sim::EquipmentRuntimeFacts],
 ) -> AuthoritativeClassProjection {
-    let rules = asset_game::LoadoutRules::for_class(&row.perks[0]);
-    let mut lock_reason = None;
-    let no_attachments = Vec::new();
-    let mut ids = [0u32; 4];
-    for (slot, id) in ids.iter_mut().enumerate() {
-        let attachments = row.attachments.get(slot).unwrap_or(&no_attachments);
-        match resolve_class_weapon(weapons, &row.weapons[slot], attachments, rules) {
-            Ok(resolved) => *id = resolved,
-            Err(reason) => append_lock_reason(&mut lock_reason, reason),
-        }
-    }
-    let names = [
-        row.weapons[0].as_str(),
-        row.weapons[1].as_str(),
-        row.weapons[2].as_str(),
-        row.weapons[3].as_str(),
-    ];
-    let mut def = sim::ClassDef::primary_secondary(sim::ClassId(class_id), 1, ids[0], ids[1]);
-    def.lethal = ids[2];
-    def.tactical = ids[3];
-    if let Some(reason) = authoritative_class_lock_reason(names, ids, combat, equipment) {
+    let resolved = resolve_personal_class(row, weapons).and_then(|loadout| {
+        loadout
+            .definition(sim::ClassId(class_id), 1)
+            .ok_or_else(|| "class.invalid_definition".to_owned())
+    });
+    let (mut def, mut lock_reason) = match resolved {
+        Ok(def) => (def, None),
+        Err(reason) => (
+            sim::ClassDef::primary_secondary(sim::ClassId(class_id), 1, 0, 0),
+            Some(reason),
+        ),
+    };
+    let names = row.weapons.each_ref().map(String::as_str);
+    if let Some(reason) =
+        authoritative_class_lock_reason(names, def.weapon_slot_ids(), combat, equipment)
+    {
         append_lock_reason(&mut lock_reason, reason);
     }
-    let perks = [
-        row.perks[0].as_str(),
-        row.perks[1].as_str(),
-        row.perks[2].as_str(),
-    ];
-    let deathstreak = row.deathstreak.as_str();
-    for (slot, perk) in def.perks.iter_mut().zip(perks) {
-        if perk.is_empty() || perk == "specialty_null" {
-            continue;
-        }
-        match perk_catalog_id(perk) {
-            Some(id) => *slot = id,
-            None => append_lock_reason(
-                &mut lock_reason,
-                format!("{perk}:perk.unknown_catalog_entry"),
-            ),
-        }
-    }
-    def.deathstreak = if deathstreak.is_empty() || deathstreak == "specialty_null" {
-        String::new()
-    } else {
-        deathstreak.to_owned()
-    };
     def.locked = lock_reason.is_some();
     AuthoritativeClassProjection { def, lock_reason }
+}
+
+impl From<&frame::HostClassSlot> for ClassRow {
+    fn from(slot: &frame::HostClassSlot) -> Self {
+        Self {
+            weapons: [
+                slot.primary.clone(),
+                slot.secondary.clone(),
+                slot.lethal.clone(),
+                slot.tactical.clone(),
+            ],
+            attachments: [
+                slot.primary_attachments.clone(),
+                slot.secondary_attachments.clone(),
+            ],
+            perks: slot.perks.clone(),
+            deathstreak: slot.deathstreak.clone(),
+        }
+    }
+}
+
+pub fn resolve_personal_class(
+    row: &ClassRow,
+    registry: &WeaponRegistry,
+) -> Result<sim::PersonalClass, String> {
+    let mut loadout = sim::PersonalClass::default();
+    let rules = asset_game::LoadoutRules::for_class(&row.perks[0]);
+    for (slot, weapon) in loadout.weapons.iter_mut().enumerate() {
+        *weapon = resolve_class_weapon(
+            registry,
+            &row.weapons[slot],
+            row.attachments.get(slot).map_or(&[], Vec::as_slice),
+            rules,
+        )?;
+    }
+    for (slot, name) in row.perks.iter().enumerate() {
+        if name.is_empty() || name == "specialty_null" {
+            continue;
+        }
+        let id =
+            perk_catalog_id(name).ok_or_else(|| format!("{name}:perk.unknown_catalog_entry"))?;
+        if sim::match_state::perk_slot_from_class_catalog(id) != Some(slot) {
+            return Err(format!("{name}:perk.invalid_slot"));
+        }
+        loadout.perks[slot] = id;
+    }
+    if !row.deathstreak.is_empty() && row.deathstreak != "specialty_null" {
+        loadout.deathstreak = sim::match_state::CLASS_CATALOG_DEATHSTREAKS
+            .iter()
+            .position(|name| *name == row.deathstreak)
+            .ok_or_else(|| format!("{}:deathstreak.unknown_catalog_entry", row.deathstreak))?
+            as u8
+            + 1;
+    }
+    Ok(loadout)
 }

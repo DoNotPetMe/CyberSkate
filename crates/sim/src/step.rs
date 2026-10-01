@@ -1,5 +1,4 @@
 use crate::frame::FrameWorld;
-use std::cell::Cell;
 
 use bevy_ecs::prelude::{Resource, World};
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
@@ -17,8 +16,9 @@ use crate::input::{ClientAction, TickInput};
 use crate::match_state::{ClientLifecycle, EventAudience, SimEvent};
 use crate::snapshot::Snapshot;
 use crate::world::{
-    ClientId, SimBrush, SimClipBsp, SimClipMesh, SimState, Tick, clip_move_to_bmodels, clip_trace,
-    give_weapon_to_ps_akimbo, gsc_give_weapon_is_akimbo, inventory_add_weapon,
+    ClientId, SimBrush, SimClipBsp, SimClipMesh, SimState, Tick, clip_move_to_bmodels,
+    clip_move_to_model_brushes, clip_trace, give_weapon_to_ps_akimbo, gsc_give_weapon_is_akimbo,
+    inventory_add_weapon,
 };
 use playerstate_iw4::PlayerState;
 use playerstate_iw4::buttons;
@@ -273,6 +273,7 @@ fn run_players_system(ecs: &mut World) {
     let mut consumed = Vec::new();
     if allow_move {
         phase_materialize_entity_dobjs(&mut world);
+        let model_brushes = world.model_movement_brushes();
         for (id, cmd) in &input.cmds {
             world.select_lagcomp_command(*id, cmd.server_time);
             if !world
@@ -335,11 +336,14 @@ fn run_players_system(ecs: &mut World) {
                 aim_down_sight,
                 ads_in_rate,
                 ads_out_rate,
+                facts.map_or(0, |f| f.ads_reload_trans_time_ms),
+                facts.is_some_and(|f| f.segmented_reload),
                 rechamber_while_ads,
                 ads_fire_only,
                 melee_delay_ms,
                 melee_charge_delay_ms,
                 overlay_reticle,
+                facts.is_some_and(|f| f.can_hold_breath),
                 world
                     .client_meta(*id)
                     .and_then(|m| m.shellshock.as_ref())
@@ -359,6 +363,7 @@ fn run_players_system(ecs: &mut World) {
                 cmd.buttons &= playerstate_iw4::buttons::CROUCH | playerstate_iw4::buttons::PRONE;
             }
             let commanded_move = cmd.forwardmove != 0 || cmd.rightmove != 0;
+            world.set_anim_command_buttons(*id, cmd.buttons);
             let linked_brushes: Vec<LinkedBrushCollisionBrush> = world
                 .entity_collision_capabilities()
                 .iter()
@@ -375,10 +380,10 @@ fn run_players_system(ecs: &mut World) {
                 self_entnum: id.0 as u16,
                 cmodels: &cmodel_models,
                 linked_brushes: &linked_brushes,
+                model_brushes: &model_brushes,
             };
             let script = world.player_anim_script();
             let mantle = world.xanims();
-            let applied_mt = Cell::new(None);
             let (
                 walking,
                 linked_bounds,
@@ -389,6 +394,9 @@ fn run_players_system(ecs: &mut World) {
                 moved_to,
                 stance_event,
                 reset_torso,
+                jump_animations,
+                force_movement_anim,
+                landing_animation,
             ) = {
                 let ps = world
                     .player_mut(*id)
@@ -407,12 +415,14 @@ fn run_players_system(ecs: &mut World) {
                     mantle.as_ref(),
                 );
                 let pml = result.pml;
-                let anim_movetype = footsteps_anim_move_type(
-                    ps,
-                    cmd.forwardmove,
-                    cmd.rightmove,
-                    pml.almost_ground_plane != 0,
-                );
+                let anim_movetype = pml.mantle_movetype.or_else(|| {
+                    footsteps_anim_move_type(
+                        ps,
+                        cmd.forwardmove,
+                        cmd.rightmove,
+                        pml.almost_ground_plane != 0,
+                    )
+                });
                 let (view_w, primary) = crate::pmove_anim_weapon_ids(ps);
                 let moved_to = ps.origin;
                 (
@@ -425,43 +435,58 @@ fn run_players_system(ecs: &mut World) {
                     moved_to,
                     result.stance_event,
                     result.reset_torso,
+                    pml.jump_animations,
+                    pml.mantle_movetype.is_some(),
+                    pml.landing_animation,
                 )
             };
             world
                 .client_meta_mut(*id)
                 .input_receipt
                 .record(commanded_move, moved_from, moved_to);
+            if reset_torso && let Some(ps) = world.player_mut(*id) {
+                crate::player_anim_script::reset_stance_torso(ps);
+            }
             if let Some(event) = stance_event {
                 crate::combat::apply_player_anim_event(&mut world, *id, event);
             }
-            if reset_torso && let Some(ps) = world.player_mut(*id) {
-                crate::player_anim_script::reset_stance_torso(ps);
+            for (animation, force) in jump_animations.into_iter().flatten() {
+                let event = match animation {
+                    movement_iw4::JumpAnimation::Forward => 3,
+                    movement_iw4::JumpAnimation::Backward => 4,
+                };
+                crate::combat::apply_player_anim_event_forced(&mut world, *id, event, force);
+            }
+            if landing_animation {
+                crate::combat::apply_player_anim_event(&mut world, *id, 5);
             }
             if let Some(movetype) = anim_movetype {
                 let view_facts = world.combat_facts_for(view_w);
                 let primary_facts = world.combat_facts_for(primary);
+                let previous_movetype = world.last_anim_movetype(*id);
                 let ps = world
                     .player_mut(*id)
                     .expect("Alive client has a player row");
-                let conds = crate::anim_conditions_from_pmove(ps, view_facts, primary_facts);
-                let requested_matches = script
-                    .as_ref()
-                    .map(|script| script.matches_movetype(movetype, &conds))
-                    .unwrap_or(true);
-                if let Some(script) = script.as_ref() {
-                    script.apply(ps, movetype, id.0, &conds);
+                let strafing =
+                    crate::player_anim_script::anim_strafing(ps, cmd.forwardmove, cmd.rightmove);
+                let conds = crate::anim_conditions_from_pmove(
+                    ps,
+                    view_facts,
+                    primary_facts,
+                    previous_movetype,
+                    strafing,
+                    cmd.buttons,
+                );
+                if let Some(script) = script.as_ref()
+                    && let Some(selected) =
+                        script.apply(ps, movetype, id.0, &conds, force_movement_anim)
+                {
+                    world.set_anim_movement(*id, selected, strafing);
                 }
-                if requested_matches {
-                    applied_mt.set(Some(movetype));
-                }
-            }
-            if let Some(mt) = applied_mt.get() {
-                world.set_last_anim_movetype(*id, mt);
             }
             world.set_pmove_walking(*id, walking);
             world.link_player_area(*id, linked_bounds);
 
-            crate::weapon_lock::update(&mut world, *id, level_time);
             let shots = advance_weapon_command(&mut world, tick, *id, cmd, delta.min(200));
             for shot in shots {
                 crate::missile::fire_accepted_shot(&mut world, tick, &shot);
@@ -803,8 +828,9 @@ fn apply_actions(world: &mut FrameWorld, tick: Tick, actions: &[(ClientId, Clien
                 request_id,
                 class_id,
                 revision,
+                loadout,
             } => {
-                apply_select_class(world, tick, *id, request_id, class_id, revision);
+                apply_select_class(world, tick, *id, request_id, class_id, revision, loadout);
             }
             ClientAction::GiveWeapon { request_id, weapon } => {
                 apply_give_weapon(world, tick, *id, request_id, weapon);
@@ -828,11 +854,29 @@ fn apply_actions(world: &mut FrameWorld, tick: Tick, actions: &[(ClientId, Clien
             ClientAction::SpawnIntermission { request_id: _ } => {
                 apply_spawn_intermission(world, *id);
             }
+            ClientAction::ResupplyAmmo { .. } => {
+                if !world.bootstrap_ref().allow_debug_actions
+                    || !world
+                        .client_meta(*id)
+                        .is_some_and(|m| m.lifecycle == ClientLifecycle::Alive)
+                {
+                    continue;
+                }
+                for weapon in
+                    crate::script_player::weapons(world, *id, crate::script_player::WeaponList::All)
+                {
+                    crate::script_player::give_max_ammo(world, *id, weapon);
+                }
+            }
             ClientAction::GiveKillstreak {
                 request_id: _,
                 name,
             } => {
-                if !world.bootstrap_ref().allow_debug_actions {
+                if !world.bootstrap_ref().allow_debug_actions
+                    || !world
+                        .client_meta(*id)
+                        .is_some_and(|m| m.lifecycle == ClientLifecycle::Alive)
+                {
                     continue;
                 }
                 let name = crate::menu_response_text(&name);
@@ -1125,7 +1169,10 @@ fn apply_configuration_change(
         0
     };
     let stock = weapon_iw4::get_ammo_not_in_clip(&ps.ammo, old_ammo_key);
-    let akimbo = gsc_give_weapon_is_akimbo(world.weapon_script_name(to));
+    let akimbo = world
+        .combat_facts_for(to)
+        .is_some_and(|facts| facts.dual_wield)
+        || gsc_give_weapon_is_akimbo(world.weapon_script_name(to));
     let (next_clip0, next_clip1, next_stock) =
         configuration_change_ammo(clip0, clip1, stock, new.clip_size, new.max_ammo, akimbo);
     if (old_ammo_key != new_ammo_key
@@ -1277,7 +1324,9 @@ fn apply_configuration_change(
     meta.mirror_held_ammo(to);
     meta.weapon_shot_count = 0;
     meta.burst_latch = false;
+    meta.burst_latch_secondary = false;
     meta.rechamber_pending = false;
+    meta.rechamber_pending_secondary = false;
     world.push_event(
         tick,
         EventAudience::Client(id),
@@ -1364,7 +1413,10 @@ fn apply_give_weapon(
         );
         return;
     }
-    let akimbo = gsc_give_weapon_is_akimbo(world.weapon_script_name(weapon));
+    let akimbo = world
+        .combat_facts_for(weapon)
+        .is_some_and(|facts| facts.dual_wield)
+        || gsc_give_weapon_is_akimbo(world.weapon_script_name(weapon));
     let Some(mut next) = world.player(id).copied() else {
         reject(world, crate::GiveRejectReason::NotAlive);
         return;
@@ -1440,7 +1492,9 @@ fn apply_give_weapon(
     meta.mirror_held_ammo(weapon);
     meta.weapon_shot_count = 0;
     meta.burst_latch = false;
+    meta.burst_latch_secondary = false;
     meta.rechamber_pending = false;
+    meta.rechamber_pending_secondary = false;
     world.push_event(
         tick,
         EventAudience::Client(id),
@@ -1475,6 +1529,21 @@ fn apply_give_offhand(
         reject(world, crate::GiveRejectReason::NotAlive);
         return;
     };
+    for slot in &mut next.weapons {
+        if *slot > 0 && *slot != weapon as i32 {
+            let same_slot = world
+                .equipment_facts_for(*slot as u32)
+                .is_some_and(|other| {
+                    (matches!(eq.offhand_class, 1 | 4 | 5)
+                        && matches!(other.offhand_class, 1 | 4 | 5))
+                        || (matches!(eq.offhand_class, 2 | 3)
+                            && matches!(other.offhand_class, 2 | 3))
+                });
+            if same_slot {
+                *slot = 0;
+            }
+        }
+    }
     inventory_add_weapon(&mut next, weapon, false);
     if !next.weapons.contains(&(weapon as i32)) {
         reject(world, crate::GiveRejectReason::InvalidWeapon);
@@ -1490,6 +1559,8 @@ fn apply_give_offhand(
     *world.player_mut(id).expect("validated alive player") = next;
     {
         let meta = world.client_meta_mut(id);
+        meta.ammo_by_weapon
+            .retain(|(id, _, _)| next.weapons.contains(&(*id as i32)));
         meta.set_ammo(weapon, clip, 0);
         if let Some(loadout) = meta.loadout.as_mut() {
             match eq.offhand_class {
@@ -1529,16 +1600,11 @@ fn answer_custom_class(world: &mut FrameWorld, id: ClientId, menu: &str, respons
     else {
         return false;
     };
-    let Some(def) = world
-        .bootstrap_ref()
-        .class(crate::ClassId(slot))
-        .filter(|def| !def.locked)
-        .cloned()
-    else {
-        return false;
+    let Some(def) = crate::script::personal_class(world.ecs(), id.0, crate::ClassId(slot)) else {
+        return true;
     };
     if validate_class_content(world, &def).is_err() {
-        return false;
+        return true;
     }
     crate::script::choose_class(world.ecs(), id.0, &def);
     true
@@ -1551,12 +1617,11 @@ fn apply_select_class(
     request_id: u32,
     class_id: crate::ClassId,
     revision: u32,
+    loadout: crate::PersonalClass,
 ) {
-    let accepted = world
-        .bootstrap_ref()
-        .class(class_id)
-        .filter(|def| def.revision == revision)
-        .cloned();
+    let accepted = (class_id.0 < crate::match_state::PERSONAL_CLASS_SLOTS as u32)
+        .then(|| loadout.definition(class_id, revision))
+        .flatten();
     let Some(def) = accepted else {
         diag::info!(
             Sim,
@@ -1577,27 +1642,6 @@ fn apply_select_class(
         );
         return;
     };
-
-    if def.locked {
-        diag::info!(
-            Sim,
-            "class select: rejected client={} id={} rev={} reason=locked_content",
-            id.0,
-            class_id.0,
-            revision
-        );
-        world.push_event(
-            tick,
-            EventAudience::Client(id),
-            SimEvent::ClassRejected {
-                request_id,
-                class_id,
-                revision,
-                reason: crate::ClassRejectReason::LockedContent,
-            },
-        );
-        return;
-    }
 
     if let Err(reason) = validate_class_content(world, &def) {
         diag::info!(
@@ -1638,11 +1682,13 @@ fn validate_class_content(
     world: &FrameWorld,
     def: &crate::ClassDef,
 ) -> Result<(), crate::ClassRejectReason> {
-    let table_len = world.weapon_combat_len();
-    if table_len == 0 {
-        return Ok(());
+    for (slot, perk) in def.perks.iter().copied().enumerate() {
+        if perk != 0 && crate::match_state::perk_slot_from_class_catalog(perk) != Some(slot) {
+            return Err(crate::ClassRejectReason::LockedContent);
+        }
     }
-
+    let max_attachments = if def.perks[0] == 12 { 2 } else { 1 };
+    let table_len = world.weapon_combat_len();
     for id in [def.primary, def.secondary] {
         if id == 0 {
             continue;
@@ -1653,18 +1699,28 @@ fn validate_class_content(
         let Some(row) = world.weapon_combat_row(id) else {
             return Err(crate::ClassRejectReason::UnknownWeaponId);
         };
-        if !row.is_usable() {
+        if !row.is_usable()
+            || !world.weapon_runnable(id)
+            || world
+                .weapon_setup(id)
+                .is_some_and(|setup| setup.attachments.len() > max_attachments)
+        {
             return Err(crate::ClassRejectReason::LockedContent);
         }
     }
-    for id in [def.lethal, def.tactical] {
+    for (slot, id) in [def.lethal, def.tactical].into_iter().enumerate() {
         if id == 0 {
             continue;
         }
         if (id as usize) >= table_len {
             return Err(crate::ClassRejectReason::UnknownWeaponId);
         }
-        if world.offhand_loadout_row(id).is_none() {
+        let Some(facts) = world.offhand_loadout_row(id) else {
+            return Err(crate::ClassRejectReason::LockedContent);
+        };
+        if !world.weapon_runnable(id)
+            || !matches!((slot, facts.offhand_class), (0, 1 | 4 | 5) | (1, 2 | 3))
+        {
             return Err(crate::ClassRejectReason::LockedContent);
         }
     }
@@ -1764,6 +1820,7 @@ struct ClipBackend<'a> {
     self_entnum: u16,
     cmodels: &'a [clipmap_iw4::ClipCmodel],
     linked_brushes: &'a [LinkedBrushCollisionBrush],
+    model_brushes: &'a [SimBrush],
 }
 
 impl CollisionBackend for ClipBackend<'_> {
@@ -1794,8 +1851,180 @@ impl CollisionBackend for ClipBackend<'_> {
             self.linked_brushes,
             input,
         );
-        clip_move_to_players(with_bmodels, self.bodies, self.self_entnum, input)
+        let with_models = clip_move_to_model_brushes(with_bmodels, self.model_brushes, input);
+        clip_move_to_players(with_models, self.bodies, self.self_entnum, input)
     }
+}
+
+impl movement_iw4::MantleCapsuleTrace for ClipBackend<'_> {
+    fn trace(
+        &mut self,
+        start: [f32; 3],
+        end: [f32; 3],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        contentmask: u32,
+    ) -> Trace {
+        CollisionBackend::trace(
+            self,
+            GroundTraceInput {
+                start,
+                end,
+                mins,
+                maxs,
+                tracemask: contentmask,
+            },
+        )
+    }
+}
+
+pub(crate) fn script_slide(
+    world: &mut World,
+    object: u64,
+    origin: [f32; 3],
+    slide: &mut crate::script::host::mechanics::Slide,
+) -> [f32; 3] {
+    let runtime = world.resource::<crate::script::Runtime>();
+    let linked = |mut child: u64| {
+        for _ in 0..runtime.entities.len() {
+            if child == object {
+                return true;
+            }
+            let parent = runtime
+                .player_client(child)
+                .and_then(|client| runtime.players.get(&client))
+                .and_then(|player| player.link.as_ref().map(|link| link.parent))
+                .or_else(|| {
+                    runtime
+                        .entities
+                        .get(&child)
+                        .and_then(|entity| entity.linked_to.as_ref().map(|link| link.parent))
+                });
+            let Some(parent) = parent else {
+                return false;
+            };
+            child = parent;
+        }
+        false
+    };
+    let excluded_models: Vec<_> = runtime
+        .entities
+        .iter()
+        .filter(|(id, _)| linked(**id))
+        .filter_map(|(_, entity)| entity.presence)
+        .collect();
+    let excluded_clients: Vec<_> = runtime
+        .players
+        .iter()
+        .filter(|(_, player)| linked(player.object))
+        .map(|(client, _)| *client as u16)
+        .collect();
+    let mut mask = crate::bullet_collision::MASK_PLAYER_SOLID;
+    let mut parent = runtime
+        .entities
+        .get(&object)
+        .and_then(|entity| entity.linked_to.as_ref().map(|link| link.parent));
+    for _ in 0..runtime.entities.len() {
+        let Some(entity) = parent.and_then(|parent| runtime.entities.get(&parent)) else {
+            break;
+        };
+        mask &= !(entity.contents as u32);
+        parent = entity.linked_to.as_ref().map(|link| link.parent);
+    }
+    let frame = FrameWorld::from_world(world);
+    let content = frame.content();
+    let linked_brushes: Vec<_> = frame
+        .entity_collision_capabilities()
+        .iter()
+        .filter(|row| {
+            !row.owner
+                .script_model()
+                .is_some_and(|model| excluded_models.contains(&model))
+        })
+        .flat_map(|row| row.solid_brushes().iter().cloned())
+        .collect();
+    let model_brushes = frame.model_movement_brushes_where(|row| {
+        !row.owner
+            .script_model()
+            .is_some_and(|model| excluded_models.contains(&model))
+    });
+    let mut bodies = alive_body_clips(&frame);
+    bodies.retain(|body| !excluded_clients.contains(&body.entnum));
+    let glass_damage = frame.world_objects().glass_damage_pairs();
+    let backend = ClipBackend {
+        brushes: content.clip_brushes(),
+        bsp: content.clip_bsp(),
+        mesh: content.clip_mesh(),
+        glass_damage: &glass_damage,
+        bodies: &bodies,
+        self_entnum: playerstate_iw4::ENTITYNUM_NONE as u16,
+        cmodels: &content.clip_cmodels().models,
+        linked_brushes: &linked_brushes,
+        model_brushes: &model_brushes,
+    };
+    slide.advance(origin, &backend, mask)
+}
+
+pub(crate) fn script_mantle(
+    world: &mut FrameWorld,
+    id: ClientId,
+    force: bool,
+) -> Result<bool, String> {
+    let Some(meta) = world.client_meta(id) else {
+        return Err("player has disconnected".into());
+    };
+    if meta.lifecycle != ClientLifecycle::Alive || meta.controls.linked {
+        return Ok(false);
+    }
+    let mut ps = *world.player(id).ok_or("player has not spawned")?;
+    if ps
+        .origin
+        .iter()
+        .chain(ps.viewangles.iter())
+        .any(|v| !v.is_finite())
+    {
+        return Err("mantle pose must be finite".into());
+    }
+    let content = world.content();
+    let linked_brushes: Vec<_> = world
+        .entity_collision_capabilities()
+        .iter()
+        .flat_map(|c| c.solid_brushes().iter().cloned())
+        .collect();
+    let model_brushes = world.model_movement_brushes();
+    let bodies = alive_body_clips(world);
+    let glass_damage = world.world_objects().glass_damage_pairs();
+    let mut backend = ClipBackend {
+        brushes: content.clip_brushes(),
+        bsp: content.clip_bsp(),
+        mesh: content.clip_mesh(),
+        glass_damage: &glass_damage,
+        bodies: &bodies,
+        self_entnum: id.0 as u16,
+        cmodels: &content.clip_cmodels().models,
+        linked_brushes: &linked_brushes,
+        model_brushes: &model_brushes,
+    };
+    let forward = math_iw4::angle_vectors(ps.viewangles).0;
+    let mantle = world.xanims();
+    let available = movement_iw4::mantle::check(
+        &mut ps,
+        movement_iw4::MantleCheckContext {
+            find: movement_iw4::MantleFindLedgeContext::default(),
+            buttons: buttons::JUMP,
+            forwardmove: 0,
+            facing_xy: [forward[0], forward[1]],
+            tracemask: crate::bullet_collision::MASK_PLAYER_SOLID,
+        },
+        &mut backend,
+        mantle.as_ref(),
+        mantle.as_ref(),
+    );
+    if available && force {
+        *world.player_mut(id).expect("checked player") = ps;
+        world.link_player_standing_area(id);
+    }
+    Ok(available)
 }
 
 fn clip_move_to_players(
@@ -1845,11 +2074,14 @@ fn pmove_context(
     aim_down_sight: bool,
     ads_in_rate: f32,
     ads_out_rate: f32,
+    ads_reload_trans_time_ms: i32,
+    segmented_reload: bool,
     rechamber_while_ads: bool,
     ads_fire_only: bool,
     melee_delay_ms: i32,
     melee_charge_delay_ms: i32,
     overlay_reticle: i32,
+    can_hold_breath: bool,
     shellshock_affects_movement: bool,
 ) -> PmoveSingleContext {
     let player_sprint_time = 4.0_f32;
@@ -1912,6 +2144,8 @@ fn pmove_context(
             aim_down_sight,
             ads_in_rate,
             ads_out_rate,
+            ads_reload_trans_time_ms,
+            segmented_reload,
             rechamber_while_ads,
             ads_fire_only,
         },
@@ -1922,6 +2156,7 @@ fn pmove_context(
         player_melee_range: movement_iw4::MELEE_CHARGE_PLAYER_MELEE_RANGE_DEFAULT,
         old_buttons,
         weapon_blocks_prone: false,
+        can_hold_breath,
     }
 }
 

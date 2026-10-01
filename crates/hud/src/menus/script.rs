@@ -126,6 +126,7 @@ pub(crate) fn parse(script: &str) -> Vec<Command> {
             "uiscript" => {
                 let script = arg(i + 1).to_ascii_lowercase();
                 match script.as_str() {
+                    "quit" => (Command::Exec("quit".into()), 2),
                     "openmenuondvar" | "openmenuondvarnot" | "closemenuondvar"
                     | "closemenuondvarnot" => (
                         Command::MenuOnDvar {

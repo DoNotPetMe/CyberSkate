@@ -182,9 +182,9 @@ pub(crate) fn obituary(
     let payload = obituary.event.payload;
     let pick = pick_kill_icon(&payload, weapons.as_deref());
     let attacker = snapshot_client_name(&presented, payload.attacker_entity_num);
-    let victim = snapshot_client_name(&presented, payload.number);
+    let victim = snapshot_client_name(&presented, payload.other_entity_num);
     let attacker_team = snapshot_client_team(&presented, payload.attacker_entity_num);
-    let victim_team = snapshot_client_team(&presented, payload.number);
+    let victim_team = snapshot_client_team(&presented, payload.other_entity_num);
     let now = milliseconds() as i32;
     window.lines.push_back(KillfeedLine::Obituary {
         start_ms: now,
@@ -192,7 +192,7 @@ pub(crate) fn obituary(
         icon_namespace: pick.namespace,
         attacker,
         has_attacker: (0..18).contains(&payload.attacker_entity_num)
-            && payload.attacker_entity_num != payload.number,
+            && payload.attacker_entity_num != payload.other_entity_num,
         victim,
         attacker_team,
         victim_team,

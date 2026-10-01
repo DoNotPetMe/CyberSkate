@@ -38,20 +38,16 @@ pub struct GameSettings {
     pub invert_mouse: bool,
     pub player_name: String,
 
-    /// Controller: the button layout (`PAD_LAYOUT_CUSTOM` once rebound).
     pub pad_layout: u8,
-    /// Controller: 0 default, 1 southpaw, 2 legacy, 3 legacy southpaw.
     pub pad_stick_layout: u8,
-    /// Controller look speed, 1 to 10.
-    pub pad_sensitivity: f32,
-    /// Controller look speed while aiming down the sight, as a multiplier.
+    pub pad_sensitivity_preset: u8,
+    pub pad_custom_sensitivity: f32,
     pub pad_ads_sensitivity: f32,
     pub pad_invert: bool,
-    /// Controller look response: 0 standard, 1 linear, 2 dynamic.
     pub pad_curve: u8,
-    /// Aim assist: 0 off, 1 slowdown and lock-on, 2 with auto aim on
-    /// raising the sight.
+    pub pad_acceleration: bool,
     pub pad_aim_assist: u8,
+    pub pad_prompts: u8,
     pub pad_vibration: bool,
     pub pad_deadzone_left: f32,
     pub pad_deadzone_right: f32,
@@ -76,11 +72,14 @@ impl Default for GameSettings {
             player_name: "Player".to_owned(),
             pad_layout: 0,
             pad_stick_layout: 0,
-            pad_sensitivity: Self::PAD_SENSITIVITY_DEFAULT,
+            pad_sensitivity_preset: 0,
+            pad_custom_sensitivity: 1.0,
             pad_ads_sensitivity: 1.0,
             pad_invert: false,
             pad_curve: 0,
-            pad_aim_assist: 1,
+            pad_acceleration: true,
+            pad_aim_assist: 0,
+            pad_prompts: 0,
             pad_vibration: true,
             pad_deadzone_left: 0.12,
             pad_deadzone_right: 0.12,
@@ -93,7 +92,17 @@ impl GameSettings {
     pub const FOV_DEFAULT: f32 = 65.0;
     pub const FOV_MIN: f32 = 65.0;
     pub const FOV_MAX: f32 = 120.0;
-    pub const PAD_SENSITIVITY_DEFAULT: f32 = 3.0;
+    pub const PAD_SENSITIVITY_PRESETS: [f32; 10] =
+        [0.6, 1.0, 1.4, 1.8, 2.0, 2.2, 2.6, 3.0, 3.5, 4.0];
+
+    pub fn pad_look_sensitivity(&self) -> f32 {
+        self.pad_sensitivity_preset
+            .checked_sub(1)
+            .and_then(|index| Self::PAD_SENSITIVITY_PRESETS.get(usize::from(index)))
+            .copied()
+            .unwrap_or(self.pad_custom_sensitivity)
+    }
+
     pub const PAD_LAYOUT_CUSTOM: u8 = 255;
 
     pub fn touch(&mut self) {
@@ -120,9 +129,17 @@ impl GameSettings {
         }
         self.pad_stick_layout = self.pad_stick_layout.min(3);
         self.pad_curve = self.pad_curve.min(2);
-        self.pad_aim_assist = self.pad_aim_assist.min(2);
-        let finite = |v: f32, lo: f32, hi: f32, default: f32| if v.is_finite() { v.clamp(lo, hi) } else { default };
-        self.pad_sensitivity = finite(self.pad_sensitivity, 1.0, 10.0, Self::PAD_SENSITIVITY_DEFAULT);
+        self.pad_aim_assist = 0;
+        self.pad_prompts = self.pad_prompts.min(3);
+        let finite = |v: f32, lo: f32, hi: f32, default: f32| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                default
+            }
+        };
+        self.pad_sensitivity_preset = self.pad_sensitivity_preset.min(10);
+        self.pad_custom_sensitivity = finite(self.pad_custom_sensitivity, 0.1, 5.0, 1.0);
         self.pad_ads_sensitivity = finite(self.pad_ads_sensitivity, 0.5, 1.5, 1.0);
         self.pad_deadzone_left = finite(self.pad_deadzone_left, 0.0, 0.4, 0.12);
         self.pad_deadzone_right = finite(self.pad_deadzone_right, 0.0, 0.4, 0.12);

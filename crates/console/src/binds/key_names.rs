@@ -85,7 +85,8 @@ macro_rules! key_catalog {
                     let upper = other.to_ascii_uppercase();
                     super::PadButton::ALL
                         .into_iter()
-                        .find(|pad| pad.console_name() == upper || pad.label() == upper)
+                        .find(|pad| pad.console_name() == upper || pad.label() == upper
+                            || format!("BUTTON_{}", pad.prompt(frame::PromptStyle::Generic)) == upper)
                         .map(|pad| vec![BindButton::Pad(pad)])
                 }
             }

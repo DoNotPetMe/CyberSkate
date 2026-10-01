@@ -12,7 +12,6 @@ asset_material.workspace = true
 asset_world.workspace = true
 assets.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
-d3d9_decl.workspace = true
 d3d9_sm3.workspace = true
 d3d9_state.workspace = true
 diag.workspace = true

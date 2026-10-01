@@ -2,6 +2,7 @@ pub mod anim;
 pub mod draw;
 mod draw_build;
 pub mod gaps;
+pub mod geometry;
 pub mod lighting;
 pub mod occupancy;
 mod plugin;

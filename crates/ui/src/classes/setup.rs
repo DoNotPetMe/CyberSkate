@@ -99,16 +99,6 @@ pub struct ClassLoadoutCatalog {
 
 impl Default for ClassLoadoutCatalog {
     fn default() -> Self {
-        let guns = |row| {
-            cac_roster(row)
-                .iter()
-                .map(|value| frame::CacWeaponOffer {
-                    key: format!("iw4:weapon/{value}"),
-                    item_group: asset_game::iw4_fallback_item_group(value).map(str::to_owned),
-                    attachments: Vec::new(),
-                })
-                .collect()
-        };
         let collect = |row| {
             cac_roster(row)
                 .iter()
@@ -117,10 +107,10 @@ impl Default for ClassLoadoutCatalog {
         };
         Self {
             revision: 0,
-            primary: guns(ClassEditRow::Primary),
-            secondary: guns(ClassEditRow::Secondary),
-            lethal: guns(ClassEditRow::Lethal),
-            tactical: guns(ClassEditRow::Tactical),
+            primary: Vec::new(),
+            secondary: Vec::new(),
+            lethal: Vec::new(),
+            tactical: Vec::new(),
             perks: [
                 collect(ClassEditRow::Perk1),
                 collect(ClassEditRow::Perk2),
@@ -137,14 +127,7 @@ impl Default for ClassLoadoutCatalog {
 impl ClassLoadoutCatalog {
     pub fn from_weapon_registry(registry: std::sync::Arc<asset_game::WeaponRegistry>) -> Self {
         let families = registry.weapon_families();
-        if families.families().is_empty() {
-            return Self::default();
-        }
         let mut catalog = Self::default();
-        catalog.primary.clear();
-        catalog.secondary.clear();
-        catalog.lethal.clear();
-        catalog.tactical.clear();
         for family in families.offered() {
             let key = family.key.asset_key();
             catalog.previews.insert(
@@ -346,35 +329,61 @@ impl ClassLoadoutCatalog {
             .unwrap_or(&[])
     }
 
+    pub fn validate_class(&self, slot: &ClassSlotState) -> Result<(), String> {
+        let registry = self
+            .resolver
+            .0
+            .as_deref()
+            .ok_or("Weapon catalog is not ready")?;
+        let row = session::ClassRow::from(&frame::HostClassSlot::from(slot));
+        session::loadout::resolve_personal_class(&row, registry).map(|_| ())
+    }
+
+    pub fn validate_edit(&self, slot: &ClassSlotState, row: ClassEditRow) -> Result<(), String> {
+        let registry = self
+            .resolver
+            .0
+            .as_deref()
+            .ok_or("Weapon catalog is not ready")?;
+        let attachments = match row {
+            ClassEditRow::Primary => slot.primary_attachments.as_slice(),
+            ClassEditRow::Secondary => slot.secondary_attachments.as_slice(),
+            _ => &[],
+        };
+        if Self::uses_categories(row) {
+            session::resolve_class_weapon(
+                registry,
+                slot.row_value(row),
+                attachments,
+                slot.loadout_rules(),
+            )?;
+        } else if !self
+            .options(row)
+            .iter()
+            .any(|value| value == slot.row_value(row))
+        {
+            return Err("Perk is unavailable".into());
+        }
+        Ok(())
+    }
+
     pub fn check_attachments(
         &self,
-        row: ClassEditRow,
         weapon: &str,
         attachments: &[String],
         rules: asset_game::LoadoutRules,
     ) -> Result<(), asset_game::ConfigurationRefusal> {
-        if let Some(registry) = self.resolver.0.as_deref() {
-            let family = asset_game::FamilyKey::parse(weapon).ok_or_else(|| {
-                asset_game::ConfigurationRefusal::UnknownFamily(weapon.to_owned())
-            })?;
-            return registry
-                .resolve_configuration(
-                    &asset_game::WeaponSelection::with(family, attachments),
-                    rules,
-                )
-                .map(|_| ());
-        }
-        let offered = self.attachments(row, weapon);
-        if let Some(name) = attachments.iter().find(|name| !offered.contains(name)) {
-            return Err(asset_game::ConfigurationRefusal::NotOffered(name.clone()));
-        }
-        if attachments.len() > rules.max_attachments {
-            return Err(asset_game::ConfigurationRefusal::RuleRestricted(format!(
-                "at most {} attachments",
-                rules.max_attachments
-            )));
-        }
-        Ok(())
+        let registry = self.resolver.0.as_deref().ok_or_else(|| {
+            asset_game::ConfigurationRefusal::MissingContent("Weapon catalog is not ready".into())
+        })?;
+        let family = asset_game::FamilyKey::parse(weapon)
+            .ok_or_else(|| asset_game::ConfigurationRefusal::UnknownFamily(weapon.to_owned()))?;
+        registry
+            .resolve_configuration(
+                &asset_game::WeaponSelection::with(family, attachments),
+                rules,
+            )
+            .map(|_| ())
     }
 }
 
@@ -424,6 +433,23 @@ pub struct ClassSlotState {
 }
 
 impl ClassSlotState {
+    pub fn from_host_slot(slot: &frame::HostClassSlot) -> Self {
+        Self {
+            name: slot.name.clone(),
+            primary: slot.primary.clone(),
+            secondary: slot.secondary.clone(),
+            primary_attachments: slot.primary_attachments.clone(),
+            secondary_attachments: slot.secondary_attachments.clone(),
+            lethal: slot.lethal.clone(),
+            tactical: slot.tactical.clone(),
+            perk1: slot.perks[0].clone(),
+            perk2: slot.perks[1].clone(),
+            perk3: slot.perks[2].clone(),
+            deathstreak: slot.deathstreak.clone(),
+            lock_reason: None,
+        }
+    }
+
     pub fn from_preset(preset: &crate::ClassPreset) -> Self {
         let perk = |i: usize| match preset.perks[i] {
             "" => NO_PERK.to_owned(),

@@ -797,76 +797,80 @@ pub(super) struct ExactColourSubmitCensus {
     ready_draws: u32,
     refused_draws: u32,
     log_frame: u32,
-
     pub submitted_keys: Vec<u64>,
-
     pub world_exec_ready_keys: Vec<u64>,
+    gpu_ready: Option<u32>,
+    pub set_bind_group0_n: Option<u32>,
+    pub set_bind_group1_n: Option<u32>,
+    pub material_runs_n: Option<u32>,
+    pub pass_setups_n: Option<u32>,
+    pub obj_binds_n: Option<u32>,
+    pub shell_hits_n: Option<u32>,
+    pub shell_misses_n: Option<u32>,
+    pub overlay_const_writes_n: Option<u32>,
+    pub overlay_need_known_n: Option<u32>,
+    code_mesh_gpu_kind: Option<i32>,
+    sun_shadow_prepare_ms: Option<f32>,
+    sun_shadow_patch_ms: Option<f32>,
+    sun_shadow_arena_ms: Option<f32>,
+    sun_shadow_record_ms: Option<f32>,
+    sun_shadow_finish_ms: Option<f32>,
+    sun_shadow_queue_ms: Option<f32>,
+    sun_shadow_unnamed_ms: Option<f32>,
+    sun_shadow_static_hit: Option<u32>,
+    sun_shadow_static_n: Option<u32>,
+    sun_shadow_dynamic_n: Option<u32>,
+    sun_shadow_wvp_intern_hit: Option<u32>,
+    sun_shadow_wvp_intern_miss: Option<u32>,
+    sun_shadow_wvp_intern_n: Option<u32>,
+    sun_shadow_wvp_unique_base: Option<u32>,
+    sun_shadow_wvp_unique_wvp: Option<u32>,
+    sun_shadow_state_pipe_n: Option<u32>,
+    sun_shadow_state_tess_n: Option<u32>,
+    sun_shadow_state_bind_n: Option<u32>,
+    sun_shadow_state_off_n: Option<u32>,
+    sun_shadow_state_group_n: Option<u32>,
+    sun_shadow_state_run_n: Option<u32>,
+    sun_shadow_state_run_max: Option<u32>,
+    sun_shadow_state_top10: Option<u32>,
+    frame: ExactColourFrameCensus,
+}
 
+#[derive(Default)]
+struct ExactColourFrameCensus {
     pub bsp_submitted_surfaces: [u32; 4],
-
     pub bsp_submit_refused_surfaces: [u32; 4],
-
     pub bsp_drawn_surfaces: [u32; 4],
-
     pub bsp_draw_refused_surfaces: [u32; 4],
     submit_prepare_ms: Option<f32>,
-
     colour_submit_ms: Option<f32>,
-
     submit_encode_ms: Option<f32>,
-
     submit_gather_ms: Option<f32>,
-
     pass_end_ms: Option<f32>,
-
     encoder_finish_ms: Option<f32>,
-
     submit_arena_ms: Option<f32>,
-
     submit_record_ms: Option<f32>,
-
     pack_intern_hit_n: Option<u32>,
-
     pack_intern_miss_n: Option<u32>,
-
     pack_arena_share_n: Option<u32>,
-
     gpu_exec_reuse_n: Option<u32>,
-
     gpu_exec_unique_n: Option<u32>,
-
     pack_overlay_n: Option<u32>,
-
     pack_overlay_row_n: Option<u32>,
-
     pack_overlay_pixel_share_n: Option<u32>,
-
     pack_arena_vertex_n: Option<u32>,
-
     pack_arena_pixel_n: Option<u32>,
-
     pack_seed_n: Option<u32>,
-
     pack_walk_n: Option<u32>,
-
     tex_bind_hit_n: Option<u32>,
-
     tex_bind_miss_n: Option<u32>,
-
     markmesh_hits: Option<u32>,
-
     markmesh_prepared: Option<u32>,
-
     last_markmesh_refusal: Option<String>,
-
     last_markmesh_exec_skip: Option<String>,
-
     markmesh_missing_58: Option<u32>,
-
     last_mark_packed_custom: Option<u8>,
-
     last_mark_packed_scene_light: Option<u8>,
-
     last_mark_lmap_sampler: Option<u32>,
     glassmesh_hits: Option<u32>,
     glassmesh_prepared: Option<u32>,
@@ -874,308 +878,77 @@ pub(super) struct ExactColourSubmitCensus {
     last_glassmesh_refusal: Option<String>,
     last_glass_packed_probe: Option<u8>,
     last_glass_probe_sampler: Option<u32>,
-
-    gpu_ready: Option<u32>,
-
-    pub set_bind_group0_n: Option<u32>,
-
-    pub set_bind_group1_n: Option<u32>,
-
-    pub material_runs_n: Option<u32>,
-
-    pub pass_setups_n: Option<u32>,
-
-    pub obj_binds_n: Option<u32>,
-
-    pub shell_hits_n: Option<u32>,
-
-    pub shell_misses_n: Option<u32>,
-
-    pub overlay_const_writes_n: Option<u32>,
-
-    pub overlay_need_known_n: Option<u32>,
-
     set_bind_group_n: Option<u32>,
-
     pub set_state_n: Option<u32>,
-
     pub multi_draw_n: Option<u32>,
     pub multi_draw_commands_n: Option<u32>,
-
     gpu_prepared: Option<u32>,
-
     gpu_world_ready: Option<u32>,
-
     gpu_smodel_ready: Option<u32>,
-
     gpu_xmodel_ready: Option<u32>,
-
     end_depth_restore_n: Option<u32>,
-
     end_depth_range_type: Option<i32>,
-
-    code_mesh_gpu_kind: Option<i32>,
-
     sun_shadow_gpu: Option<u32>,
-
     sun_shadow_gpu_miss: Option<u32>,
-
     sun_shadow_gpu_cause: Option<String>,
-
     sun_shadow_gpu_causes: Option<String>,
-
     spot_shadow_gpu: Option<u32>,
     spot_shadow_gpu_miss: Option<u32>,
     spot_shadow_gpu_cause: Option<String>,
     spot_shadow_slot_n: Option<u32>,
-
     sun_shadow_submit_ms: Option<f32>,
-
-    sun_shadow_prepare_ms: Option<f32>,
-
-    sun_shadow_patch_ms: Option<f32>,
-
-    sun_shadow_arena_ms: Option<f32>,
-
-    sun_shadow_record_ms: Option<f32>,
-
-    sun_shadow_finish_ms: Option<f32>,
-
-    sun_shadow_queue_ms: Option<f32>,
-
-    sun_shadow_unnamed_ms: Option<f32>,
-
-    sun_shadow_static_hit: Option<u32>,
-
     sun_shadow_world_ib_n: Option<u32>,
-
-    sun_shadow_static_n: Option<u32>,
-
-    sun_shadow_dynamic_n: Option<u32>,
-
-    sun_shadow_wvp_intern_hit: Option<u32>,
-
-    sun_shadow_wvp_intern_miss: Option<u32>,
-
-    sun_shadow_wvp_intern_n: Option<u32>,
-
-    sun_shadow_wvp_unique_base: Option<u32>,
-
-    sun_shadow_wvp_unique_wvp: Option<u32>,
-
-    sun_shadow_state_pipe_n: Option<u32>,
-
-    sun_shadow_state_tess_n: Option<u32>,
-
-    sun_shadow_state_bind_n: Option<u32>,
-
-    sun_shadow_state_off_n: Option<u32>,
-
-    sun_shadow_state_group_n: Option<u32>,
-
-    sun_shadow_state_run_n: Option<u32>,
-
-    sun_shadow_state_run_max: Option<u32>,
-
-    sun_shadow_state_top10: Option<u32>,
-
     world_index_gaps: Option<u32>,
-
     world_run_indices_n: Option<u32>,
-
     world_material_runs: Option<u32>,
-
     world_material_runs_seq: Option<u32>,
-
     world_key_runs: Option<u32>,
-
     world_key_runs_seq: Option<u32>,
-
     world_mixed_breaks: Option<u32>,
-
     world_gathered: Option<u32>,
-
     world_ib_skip: Option<u32>,
-
     world_gpu_runs: Option<u32>,
-
     world_gpu_runs_seq: Option<u32>,
-
     world_sampler_runs_seq: Option<u32>,
-
     world_probe_runs_seq: Option<u32>,
-
     world_light_runs_seq: Option<u32>,
-
     smodel_reuse_n: Option<u32>,
-
     xmodel_reuse_n: Option<u32>,
-
     xmodel_material_runs: Option<u32>,
-
     smodel_index_gaps: Option<u32>,
-
     smodel_material_runs: Option<u32>,
-
     smodel_material_runs_seq: Option<u32>,
-
     smodel_material_run_max: Option<u32>,
-
     smodel_same_surface_n: Option<u32>,
-
     smodel_unique_surfaces: Option<u32>,
-
     smodel_hits: Option<u32>,
-
     smodel_lighting_runs: Option<u32>,
     smodel_lighting_run_max: Option<u32>,
-
     smodel_pretess_runs: Option<u32>,
     smodel_pretess_hits: Option<u32>,
     smodel_pretess_verts: Option<u32>,
     smodel_pretess_indices: Option<u32>,
-
     smodel_cached_lighting: Option<u32>,
-
     smodel_pretess_local: Option<u32>,
-
     smodel_pretess_length1: Option<u32>,
-
     smodel_pretess_skip: Option<u32>,
-
     submit_cause: Option<String>,
-
     submit_cause2: Option<String>,
-
     gpu_not_ready_n: Option<u32>,
-
     gpu_no_port_n: Option<u32>,
-
     pnr_smodel_mat: Option<String>,
-
     pnr_world_mat: Option<String>,
-
     pnr_smodel_ps: Option<String>,
-
     pnr_world_ps: Option<String>,
-
     pnr_smodel_key_n: Option<u32>,
-
     pnr_world_key_n: Option<u32>,
-
     pnr_port_n: Option<u32>,
-
     gpu_smodel_bind_mat: Option<String>,
 }
 
 fn reset_exact_colour_census(census: &mut ExactColourSubmitCensus) {
     census.submitted_keys.clear();
-    census.bsp_submitted_surfaces = [0; 4];
-    census.bsp_submit_refused_surfaces = [0; 4];
-    census.bsp_drawn_surfaces = [0; 4];
-    census.bsp_draw_refused_surfaces = [0; 4];
-    census.submit_prepare_ms = None;
-    census.colour_submit_ms = None;
-    census.submit_encode_ms = None;
-    census.submit_gather_ms = None;
-    census.pass_end_ms = None;
-    census.encoder_finish_ms = None;
-    census.submit_arena_ms = None;
-    census.submit_record_ms = None;
-    census.pack_intern_hit_n = None;
-    census.pack_intern_miss_n = None;
-    census.pack_arena_share_n = None;
-    census.gpu_exec_reuse_n = None;
-    census.gpu_exec_unique_n = None;
-    census.pack_overlay_n = None;
-    census.pack_overlay_row_n = None;
-    census.pack_overlay_pixel_share_n = None;
-    census.pack_arena_vertex_n = None;
-    census.pack_arena_pixel_n = None;
-    census.pack_seed_n = None;
-    census.pack_walk_n = None;
-    census.tex_bind_hit_n = None;
-    census.tex_bind_miss_n = None;
-    census.markmesh_hits = None;
-    census.markmesh_prepared = None;
-    census.last_markmesh_refusal = None;
-    census.last_markmesh_exec_skip = None;
-    census.markmesh_missing_58 = None;
-    census.last_mark_packed_custom = None;
-    census.last_mark_packed_scene_light = None;
-    census.last_mark_lmap_sampler = None;
-    census.glassmesh_hits = None;
-    census.glassmesh_prepared = None;
-    census.last_glassmesh_exec_skip = None;
-    census.last_glassmesh_refusal = None;
-    census.last_glass_packed_probe = None;
-    census.last_glass_probe_sampler = None;
-    census.gpu_prepared = None;
-    census.gpu_world_ready = None;
-    census.gpu_smodel_ready = None;
-    census.gpu_xmodel_ready = None;
-    census.end_depth_restore_n = None;
-    census.end_depth_range_type = None;
-    census.submit_cause = None;
-    census.submit_cause2 = None;
-    census.gpu_not_ready_n = None;
-    census.gpu_no_port_n = None;
-    census.pnr_smodel_mat = None;
-    census.pnr_world_mat = None;
-    census.pnr_smodel_ps = None;
-    census.pnr_world_ps = None;
-    census.pnr_smodel_key_n = None;
-    census.pnr_world_key_n = None;
-    census.pnr_port_n = None;
-    census.gpu_smodel_bind_mat = None;
-    census.world_index_gaps = None;
-    census.world_run_indices_n = None;
-    census.world_material_runs = None;
-    census.world_material_runs_seq = None;
-    census.world_key_runs = None;
-    census.world_key_runs_seq = None;
-    census.world_mixed_breaks = None;
-    census.world_gathered = None;
-    census.world_ib_skip = None;
-    census.world_gpu_runs = None;
-    census.world_gpu_runs_seq = None;
-    census.world_sampler_runs_seq = None;
-    census.world_probe_runs_seq = None;
-    census.world_light_runs_seq = None;
-    census.smodel_reuse_n = None;
-    census.xmodel_reuse_n = None;
-    census.xmodel_material_runs = None;
-    census.smodel_index_gaps = None;
-    census.smodel_material_runs = None;
-    census.smodel_material_runs_seq = None;
-    census.smodel_material_run_max = None;
-    census.smodel_same_surface_n = None;
-    census.smodel_unique_surfaces = None;
-    census.smodel_hits = None;
-    census.smodel_lighting_runs = None;
-    census.smodel_lighting_run_max = None;
-    census.smodel_pretess_runs = None;
-    census.smodel_pretess_hits = None;
-    census.smodel_pretess_verts = None;
-    census.smodel_pretess_indices = None;
-    census.smodel_cached_lighting = None;
-    census.smodel_pretess_local = None;
-    census.smodel_pretess_length1 = None;
-    census.smodel_pretess_skip = None;
-    census.set_bind_group_n = None;
-    census.set_state_n = None;
-    census.multi_draw_n = None;
-    census.multi_draw_commands_n = None;
-    census.sun_shadow_gpu = None;
-    census.sun_shadow_submit_ms = None;
-    census.sun_shadow_gpu_miss = None;
-    census.sun_shadow_gpu_cause = None;
-    census.sun_shadow_gpu_causes = None;
-    census.spot_shadow_gpu = None;
-    census.spot_shadow_gpu_miss = None;
-    census.spot_shadow_gpu_cause = None;
-    census.spot_shadow_slot_n = None;
-    census.sun_shadow_world_ib_n = None;
+    census.frame = ExactColourFrameCensus::default();
 }
 
 fn exec_tables(

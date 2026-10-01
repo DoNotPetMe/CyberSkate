@@ -1,7 +1,23 @@
-use bevy::prelude::{Entity, Resource};
+use bevy::prelude::{Entity, Message, Resource};
 
-/// The controller the player is using: the last one pressed or moved. A
-/// virtual joystick or an idle second pad stays connected without taking
-/// over.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ActivePad(pub Option<Entity>);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PromptStyle {
+    Xbox,
+    PlayStation,
+    #[default]
+    Generic,
+}
+
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputDevices {
+    pub pad_prompts: bool,
+    pub style: PromptStyle,
+    pub focused: bool,
+    pub aiming_with_pad: bool,
+}
+
+#[derive(Message)]
+pub struct TestControllerRumble;

@@ -26,6 +26,7 @@ pub(crate) fn validated_facts(
         }
     }
     WeaponCombatFacts::try_from_captured(CapturedCombatInput {
+        dual_wield: f.dual_wield,
         fire_time_ms: f.fire_time_ms,
         fire_delay_ms: f.fire_delay_ms,
         raise_time_ms: f.raise_time_ms,
@@ -68,6 +69,8 @@ pub(crate) fn validated_facts(
         inherits_perks: f.inherits_perks,
         sprint_raise_time_ms: f.sprint_raise_time_ms,
         sprint_drop_time_ms: f.sprint_drop_time_ms,
+        stunned_start_time_ms: f.stunned_start_time_ms,
+        stunned_end_time_ms: f.stunned_end_time_ms,
         damage: f.damage,
         min_damage: f.min_damage,
         max_damage_range: f.max_damage_range,
@@ -87,11 +90,13 @@ pub(crate) fn validated_facts(
         ads_spread: f.ads_spread,
         aim_down_sight: f.aim_down_sight,
         no_ads_when_mag_empty: f.no_ads_when_mag_empty,
+        ads_reload_trans_time_ms: f.ads_reload_trans_time_ms,
         ads_in_rate: f.ads_in_rate,
         ads_out_rate: f.ads_out_rate,
         rechamber_while_ads: f.rechamber_while_ads,
         ads_fire_only: f.ads_fire_only,
         melee_damage: f.melee_damage,
+        can_hold_breath: f.can_hold_breath,
         overlay_reticle: f.overlay_reticle,
         melee_time_ms: f.melee_time_ms,
         melee_delay_ms: f.melee_delay_ms,
@@ -224,6 +229,8 @@ pub fn pen_from_registry(weapons: &WeaponRegistry) -> Vec<weapon_iw4::BulletPenF
                 penetrate_type: f.penetrate_type,
                 penetrate_multiplier: f.penetrate_multiplier,
                 rifle_bullet: f.rifle_bullet,
+                ricochet_chance: f.ricochet_chance,
+                explosive_bullet: f.explosive_bullet,
             }
         })
         .collect()
@@ -240,16 +247,30 @@ pub fn equipment_from_registry(weapons: &WeaponRegistry) -> Vec<sim::EquipmentRu
                 start_ammo: f.start_ammo_rounds(),
                 clip_size: f.clip_size,
                 impact_damage: f.damage,
+                impact_payload_weapon: weapons.impact_payload_of(index as u32).unwrap_or(0),
                 fuse_time_ms: f.fuse_time_ms,
                 hold_fire_time_ms: f.hold_fire_time_ms,
                 cook_off_hold: f.cook_off_hold,
+                has_detonator: f.has_detonator,
+                detonate_delay_ms: f.detonate_delay_ms,
+                detonate_time_ms: f.detonate_time_ms,
+                projectile_rotates: f.projectile_rotates
+                    || weapons.namespace_of(index as u32) != Some(asset_core::AssetNamespace::Iw4),
+                stickiness: f.stickiness,
                 timed_detonation: f.timed_detonation,
                 proj_impact_explode: f.proj_impact_explode,
                 stick_to_players: f.stick_to_players,
+                ballistic_blade: weapons.namespace_of(index as u32)
+                    == Some(asset_core::AssetNamespace::T5)
+                    && weapons.name_of(index as u32) == "knife_ballistic_mp",
                 explosion_radius: f.explosion_radius,
                 explosion_radius_min: f.explosion_radius_min,
                 explosion_inner_damage: f.explosion_inner_damage,
                 explosion_outer_damage: f.explosion_outer_damage,
+                damage_cone_angle: f.damage_cone_angle,
+                missile_guidance: f.missile_guidance,
+                ignition_delay_ms: f.ignition_delay_ms,
+                require_lock_to_fire: f.require_lock_to_fire,
                 projectile_speed: f.projectile_speed,
                 projectile_speed_up: f.projectile_speed_up,
                 projectile_speed_forward: f.projectile_speed_forward,

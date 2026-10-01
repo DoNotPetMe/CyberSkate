@@ -1,6 +1,4 @@
-use playerstate_iw4::{PlayerState, UserCmd};
-
-pub const PMF_SPRINTING: u32 = 0x4000;
+use playerstate_iw4::{PlayerState, UserCmd, buttons, pm_flags};
 
 #[must_use]
 pub fn get_max_sprint_time(sprint_duration_scale: f32, player_sprint_time_seconds: f32) -> i32 {
@@ -34,9 +32,19 @@ pub fn sprint_forward_below_minimum(forwardmove: i8, forward_minimum: i32) -> bo
     !((forwardmove as i32) > forward_minimum)
 }
 
-const PMF_SPRINT_BLOCKED: u32 = 0x0002_0000;
-
 const BUTTON_SPRINT: u32 = 0x2;
+
+fn sprint_interfering_buttons(ps: &PlayerState, pressed: u32, mask: u32) -> bool {
+    let mask = if ps.last_weapon_hand == 1
+        && !(8..=12).contains(&ps.weaponstate_primary)
+        && pressed & buttons::USE_RELOAD != 0
+    {
+        mask & !(buttons::USE_RELOAD | buttons::RELOAD)
+    } else {
+        mask
+    };
+    pressed & mask != 0
+}
 
 pub const PERK_MARATHON: u32 = 0x0200_0000;
 
@@ -65,9 +73,9 @@ pub fn sprint_start_interfering_buttons(
     forward_minimum: i32,
 ) -> bool {
     let flags = ps.pm_flags;
-    if (flags & 8) != 0
+    if (flags & pm_flags::LADDER) != 0
         || sprint_forward_below_minimum(forwardmove, forward_minimum)
-        || (buttons & 0xcc35) != 0
+        || sprint_interfering_buttons(ps, buttons, 0xcc35)
     {
         return true;
     }
@@ -87,7 +95,7 @@ pub fn sprint_ending_buttons(
     let flags = ps.pm_flags;
     if (flags & 0x8018) != 0
         || sprint_forward_below_minimum(forwardmove, forward_minimum)
-        || (buttons & 0xcf35) != 0
+        || sprint_interfering_buttons(ps, buttons, 0xcf35)
     {
         return true;
     }
@@ -98,7 +106,7 @@ pub fn sprint_ending_buttons(
 }
 
 fn weapon_state_admits_sprint(ps: &PlayerState, flags: u32, ending: bool) -> bool {
-    if !ending && (flags & 0x2000) != 0 && ps.pm_time == 0 {
+    if !ending && (flags & pm_flags::JUMPING) != 0 && ps.pm_time == 0 {
         return true;
     }
     let state = ps.weaponstate_primary;
@@ -115,12 +123,12 @@ fn weapon_state_admits_sprint(ps: &PlayerState, flags: u32, ending: bool) -> boo
 }
 
 pub fn end_sprint(ps: &mut PlayerState, cmd: &UserCmd) {
-    if (ps.pm_flags & PMF_SPRINTING) == 0 {
+    if (ps.pm_flags & pm_flags::SPRINTING) == 0 {
         return;
     }
     ps.sprint_delay = 0;
     ps.last_sprint_end = cmd.server_time;
-    ps.pm_flags &= !PMF_SPRINTING;
+    ps.pm_flags &= !pm_flags::SPRINTING;
     if (cmd.buttons & BUTTON_SPRINT) != 0 {
         ps.sprint_button_up_required = 1;
     }
@@ -201,7 +209,7 @@ pub fn update_sprint(
         return end_for_dead_movement_type(ps, cmd);
     }
 
-    if (ps.pm_flags & PMF_SPRINTING) != 0 {
+    if (ps.pm_flags & pm_flags::SPRINTING) != 0 {
         let unlimited = (ps.perks[0] & PERK_MARATHON) != 0 || context.sprint_forever;
         if !unlimited
             && ps.sprint_start_max_length <= cmd.server_time.wrapping_sub(ps.last_sprint_start)
@@ -235,7 +243,7 @@ pub fn update_sprint(
         }
     }
     if (cmd.buttons & BUTTON_SPRINT) == 0
-        || (ps.pm_flags & PMF_SPRINT_BLOCKED) != 0
+        || (ps.pm_flags & pm_flags::SPRINT_BLOCKED) != 0
         || ps.sprint_button_up_required != 0
         || sprint_start_interfering_buttons(
             ps,
@@ -255,17 +263,17 @@ pub fn update_sprint(
 
     ps.sprint_start_max_length = budget;
     ps.last_sprint_start = cmd.server_time;
-    ps.pm_flags |= PMF_SPRINTING;
+    ps.pm_flags |= pm_flags::SPRINTING;
     SprintResult::Started
 }
 
 fn end_for_dead_movement_type(ps: &mut PlayerState, cmd: &UserCmd) -> SprintResult {
-    if (ps.pm_flags & PMF_SPRINTING) == 0 {
+    if (ps.pm_flags & pm_flags::SPRINTING) == 0 {
         return SprintResult::Unchanged;
     }
     ps.sprint_delay = 0;
     ps.last_sprint_end = cmd.server_time;
-    ps.pm_flags &= !PMF_SPRINTING;
+    ps.pm_flags &= !pm_flags::SPRINTING;
     if (cmd.buttons & BUTTON_SPRINT) != 0 {
         ps.sprint_button_up_required = 1;
     }

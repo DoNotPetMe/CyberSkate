@@ -80,16 +80,27 @@ fn deliver_external(world: &mut World, now: i64) {
         stack: Vec::new(),
         state: ThreadState::Complete,
     };
-    if let Err(message) = deliver_pending(world, &mut carrier, now) {
-        world.resource_mut::<Runtime>().fault = Some(Fault::at(
-            &Location {
-                module: "<engine>".into(),
-                function: "notify".into(),
-                line: 0,
-                column: 0,
-            },
-            message,
-        ));
+    let pending = std::mem::take(&mut world.resource_mut::<Runtime>().pending_notifies);
+    let program = world.resource::<Runtime>().program.clone().unwrap();
+    for (receiver, name, args) in pending {
+        let result = notify(world, &mut carrier, &receiver, &name, &args, now);
+        if let Err(message) = result {
+            world.resource_mut::<Runtime>().fault = Some(Fault::at(
+                &Location {
+                    module: "<engine>".into(),
+                    function: "notify".into(),
+                    line: 0,
+                    column: 0,
+                },
+                message,
+            ));
+            break;
+        }
+        // A touch handler can wait again before the next toucher is notified.
+        run_ready(world, &program, now);
+        if world.resource::<Runtime>().fault.is_some() {
+            break;
+        }
     }
 }
 
@@ -358,8 +369,9 @@ fn format_g(value: f64) -> String {
 pub(super) fn to_text(value: &Value) -> Option<String> {
     match value {
         Value::Int(n) => Some(n.to_string()),
-        Value::Float(n) => Some(format_g(f64::from(*n))),
-        Value::Vector(v) => Some(format!(
+        // format_g needs the exponent that NaN and infinity print without.
+        Value::Float(n) if n.is_finite() => Some(format_g(f64::from(*n))),
+        Value::Vector(v) if v.iter().all(|n| n.is_finite()) => Some(format!(
             "({}, {}, {})",
             format_g(f64::from(v[0])),
             format_g(f64::from(v[1])),
@@ -913,6 +925,14 @@ fn instruction(
                 thread.stack.push(value);
                 return Ok(());
             }
+            if let Some(value) = super::host::mechanics::load_slide_field(
+                world,
+                id,
+                &program.symbols[field as usize],
+            ) {
+                thread.stack.push(value);
+                return Ok(());
+            }
             let runtime = world.resource::<Runtime>();
             let fields = runtime
                 .objects
@@ -936,6 +956,14 @@ fn instruction(
                     &value,
                 )?
             {
+                return Ok(());
+            }
+            if super::host::mechanics::store_slide_field(
+                world,
+                id,
+                &program.symbols[field as usize],
+                &value,
+            )? {
                 return Ok(());
             }
             super::host::hud::store_field(world, id, &program.symbols[field as usize], &value)?;
@@ -1200,17 +1228,6 @@ fn kill(world: &mut World, entity: Entity, serial: u64) {
     retire(&mut world.resource_mut::<Runtime>(), serial);
 }
 
-fn deliver_timers(world: &mut World, now: i64) {
-    let mut runtime = world.resource_mut::<Runtime>();
-    let timers = std::mem::take(&mut runtime.timers);
-    let (due, pending): (Vec<_>, Vec<_>) = timers.into_iter().partition(|(at, _, _)| *at <= now);
-    runtime.timers = pending;
-    drop(runtime);
-    for (_, receiver, name) in due {
-        raise(world, receiver, &name, Vec::new());
-    }
-}
-
 pub(crate) fn advance_scheduler(world: &mut World) {
     let request = world.resource::<crate::step::StepRequest>();
     if !request.reason.advances_authority_world() {
@@ -1242,7 +1259,6 @@ pub(crate) fn advance_scheduler(world: &mut World) {
     world.resource_mut::<Runtime>().last_tick = Some(tick);
     let now = i64::from(tick.0) * i64::from(crate::MATCH_TICK_MS);
     super::host::mechanics::deliver_finished(world);
-    deliver_timers(world, now);
     deliver_external(world, now);
     let threads: Vec<_> = world
         .query::<(Entity, &Thread)>()
@@ -1269,6 +1285,25 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         }
         runtime.buckets.insert(now, current);
     }
+    run_ready(world, &program, now);
+    let deletes = std::mem::take(&mut world.resource_mut::<Runtime>().pending_deletes);
+    for object in deletes {
+        world.resource_mut::<Runtime>().delete_entity(object);
+    }
+    let mut runtime = world.resource_mut::<Runtime>();
+    for id in std::mem::take(&mut runtime.dying) {
+        if let Some(fields) = runtime.objects.get_mut(&id) {
+            fields.clear();
+        }
+    }
+    if runtime.buckets.get(&now).is_some_and(VecDeque::is_empty) {
+        runtime.buckets.remove(&now);
+    }
+    runtime.loading = false;
+    collect_heap(world);
+}
+
+fn run_ready(world: &mut World, program: &Program, now: i64) {
     loop {
         let next = world
             .resource_mut::<Runtime>()
@@ -1289,7 +1324,7 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         let mut thread = world.entity_mut(entity).take::<Thread>().unwrap();
         thread.state = ThreadState::Runnable;
         world.resource_mut::<Runtime>().budget = INSTRUCTION_BUDGET;
-        execute(world, &program, &mut thread, now);
+        execute(world, program, &mut thread, now);
         if thread.state == ThreadState::Complete {
             kill(world, entity, serial);
         } else {
@@ -1299,21 +1334,6 @@ pub(crate) fn advance_scheduler(world: &mut World) {
             break;
         }
     }
-    let deletes = std::mem::take(&mut world.resource_mut::<Runtime>().pending_deletes);
-    for object in deletes {
-        world.resource_mut::<Runtime>().delete_entity(object);
-    }
-    let mut runtime = world.resource_mut::<Runtime>();
-    for id in std::mem::take(&mut runtime.dying) {
-        if let Some(fields) = runtime.objects.get_mut(&id) {
-            fields.clear();
-        }
-    }
-    if runtime.buckets.get(&now).is_some_and(VecDeque::is_empty) {
-        runtime.buckets.remove(&now);
-    }
-    runtime.loading = false;
-    collect_heap(world);
 }
 
 pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread, now: i64) {
@@ -1572,7 +1592,6 @@ impl Runtime {
             pending.push(receiver.clone());
             pending.extend(args.iter().cloned());
         }
-        pending.extend(self.timers.iter().map(|(_, receiver, _)| receiver.clone()));
         pending.extend(self.engine.match_data.values().cloned());
         pending.extend(self.engine.world.map(Value::Object));
         pending.extend(

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Write};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,11 +35,47 @@ const CLI_DEADLINE: Duration = Duration::from_secs(8);
 const BOOTSTRAP_FORWARD: Duration = Duration::from_secs(8);
 const HELLO_DEADLINE: Duration = Duration::from_secs(8);
 const MAX_CONNECTIONS: usize = 256;
+/// A household or a LAN party shares one address.
+const MAX_CONNECTIONS_PER_ADDRESS: usize = 32;
 
 const CLOSE_SERVICE_ERROR: u32 = 1;
 const CLOSE_SERVICE_DONE: u32 = 0;
 
 const MAX_CLOSE_REASON_BYTES: usize = 120;
+
+struct AddressSlot {
+    counts: Arc<std::sync::Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl AddressSlot {
+    fn claim(counts: &Arc<std::sync::Mutex<HashMap<IpAddr, usize>>>, ip: IpAddr) -> Option<Self> {
+        let mut held = counts.lock().expect("address counts poisoned");
+        let count = held.entry(ip).or_insert(0);
+        if *count >= MAX_CONNECTIONS_PER_ADDRESS {
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            counts: Arc::clone(counts),
+            ip,
+        })
+    }
+}
+
+impl Drop for AddressSlot {
+    fn drop(&mut self) {
+        let Ok(mut held) = self.counts.lock() else {
+            return;
+        };
+        if let Some(count) = held.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.ip);
+            }
+        }
+    }
+}
 
 enum ConnTask {
     Writer(Result<()>),
@@ -80,8 +116,41 @@ struct Peer {
     control_tx: tokio::sync::mpsc::Sender<ControlFrame>,
 }
 
+struct PasswordVerifier {
+    salt: [u8; 16],
+    digest: ring::digest::Digest,
+}
+
+impl PasswordVerifier {
+    fn new(password: &str) -> Option<Self> {
+        if password.is_empty() {
+            return None;
+        }
+        let salt = random_bytes();
+        Some(Self {
+            salt,
+            digest: Self::digest(salt, password),
+        })
+    }
+    fn digest(salt: [u8; 16], password: &str) -> ring::digest::Digest {
+        let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+        context.update(&salt);
+        context.update(password.as_bytes());
+        context.finish()
+    }
+    fn matches(&self, password: &str) -> bool {
+        self.digest
+            .as_ref()
+            .iter()
+            .zip(Self::digest(self.salt, password).as_ref())
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
+    }
+}
+
 struct Room {
     view: RoomView,
+    password: Option<PasswordVerifier>,
     host_connection_id: u64,
     member_of: HashMap<u64, MemberId>,
     connection_of: HashMap<MemberId, u64>,
@@ -472,7 +541,23 @@ async fn serve(bind: SocketAddr, cert_path: &Path, key_path: &Path) -> Result<()
         ALPN
     )?;
     let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let address_counts = Arc::new(std::sync::Mutex::new(HashMap::new()));
     while let Some(incoming) = endpoint.accept().await {
+        // No slot before the address is proven: a forged Initial would hold
+        // one until its handshake timed out.
+        if !incoming.remote_address_validated() && incoming.may_retry() {
+            let _ = incoming.retry();
+            continue;
+        }
+        let remote = incoming.remote_address();
+        let Some(address_slot) = AddressSlot::claim(&address_counts, remote.ip()) else {
+            let _ = writeln!(
+                std::io::stderr(),
+                "connection refused: {remote} at per-address cap {MAX_CONNECTIONS_PER_ADDRESS}"
+            );
+            incoming.refuse();
+            continue;
+        };
         let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
             let _ = writeln!(
                 std::io::stderr(),
@@ -483,7 +568,6 @@ async fn serve(bind: SocketAddr, cert_path: &Path, key_path: &Path) -> Result<()
         };
         let state = Arc::clone(&state);
         let connection_id = next_connection_id.fetch_add(1, Ordering::Relaxed);
-        let remote = incoming.remote_address();
         let started = Instant::now();
         let _ = writeln!(
             std::io::stderr(),
@@ -491,6 +575,7 @@ async fn serve(bind: SocketAddr, cert_path: &Path, key_path: &Path) -> Result<()
         );
         tokio::spawn(async move {
             let _permit = permit;
+            let _address_slot = address_slot;
             match incoming.await {
                 Ok(connection) => {
                     let _ = writeln!(
@@ -697,6 +782,8 @@ async fn handle_request(
             mode,
             max_players,
             requires,
+            available,
+            password,
         } => create_room(
             &mut state,
             connection_id,
@@ -705,10 +792,29 @@ async fn handle_request(
             mode,
             max_players,
             requires,
+            available,
+            password,
         ),
-        RequestBody::JoinRoom { room_id, have } => {
-            join_room(&mut state, connection_id, room_id, have)
-        }
+        RequestBody::JoinRoom {
+            room_id,
+            have,
+            password,
+        } => join_room(&mut state, connection_id, room_id, have, password),
+        RequestBody::SetPassword { password } => match state.host_of(connection_id) {
+            Ok(room_id) => {
+                let room = state.rooms.get_mut(&room_id).expect("host room");
+                room.password = PasswordVerifier::new(&password);
+                room.view.password_protected = room.password.is_some();
+                state.bump_room(room_id);
+                (
+                    ResponseBody::RoomUpdated {
+                        view: state.rooms[&room_id].view.clone(),
+                    },
+                    state.publish_view(room_id),
+                )
+            }
+            Err(error) => (ResponseBody::Error(error), Vec::new()),
+        },
         RequestBody::LeaveRoom => leave_room(&mut state, connection_id),
         RequestBody::SetOptions {
             map,
@@ -821,6 +927,8 @@ fn create_room(
     mode: String,
     max_players: u8,
     requires: master_protocol::ContentFlags,
+    available: master_protocol::ContentFlags,
+    password: String,
 ) -> (ResponseBody, Vec<(u64, ControlFrame)>) {
     if state.membership.contains_key(&connection_id) {
         return (
@@ -850,6 +958,8 @@ fn create_room(
         phase: RoomPhase::Gathering,
         max_players,
         requires,
+        available,
+        password_protected: !password.is_empty(),
     };
     let mut member_of = HashMap::new();
     member_of.insert(connection_id, member_id);
@@ -859,6 +969,7 @@ fn create_room(
         room_id,
         Room {
             view: view.clone(),
+            password: PasswordVerifier::new(&password),
             host_connection_id: connection_id,
             member_of,
             connection_of,
@@ -880,6 +991,7 @@ fn join_room(
     connection_id: u64,
     room_id: AdvertId,
     have: master_protocol::ContentFlags,
+    password: String,
 ) -> (ResponseBody, Vec<(u64, ControlFrame)>) {
     if let Some(existing) = state.membership.get(&connection_id).copied() {
         if existing == room_id {
@@ -901,6 +1013,16 @@ fn join_room(
     let Some(room) = state.rooms.get(&room_id) else {
         return (ResponseBody::Error(ServiceError::UnknownAdvert), Vec::new());
     };
+    if room
+        .password
+        .as_ref()
+        .is_some_and(|verifier| !verifier.matches(&password))
+    {
+        return (
+            ResponseBody::Error(ServiceError::IncorrectPassword),
+            Vec::new(),
+        );
+    }
     if !room.view.advert().allows_join_request() {
         return (ResponseBody::Error(ServiceError::Locked), Vec::new());
     }

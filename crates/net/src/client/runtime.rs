@@ -378,7 +378,7 @@ pub fn arm_listen_prediction(
     prediction.0.arm_from_content(&authority.0);
 }
 
-pub fn advance_cls_realtime(mut cls: ResMut<ClientRealtime>, time: Res<Time>) {
+pub fn advance_cls_realtime(mut cls: ResMut<ClientRealtime>, time: Res<Time<Real>>) {
     cls.advance_listen(time.delta_secs());
 }
 
@@ -423,13 +423,8 @@ pub fn advance_cg_frame_clock(
 
 #[derive(Default)]
 pub struct JoinLinkWatch {
-    first_offer: Option<std::time::Instant>,
-    last_line: Option<std::time::Instant>,
-    offers: u32,
     connected: bool,
 }
-
-const JOIN_WAIT_LINE_SECS: f32 = 2.0;
 
 pub fn receive_ticks(
     mut link: Option<ResMut<crate::transport::udp_session::UdpClientLink>>,
@@ -438,22 +433,11 @@ pub fn receive_ticks(
     mut local: ResMut<LocalPresentClient>,
     mut prediction: ResMut<ClientPredictionState>,
     trace: Option<ResMut<ClientPhaseTrace>>,
-    descriptor: Option<Res<crate::MatchDescriptor>>,
     mut watch: Local<JoinLinkWatch>,
     mut reliable: ReliableInbound,
 ) {
     push_phase(trace, "Receive");
     if let Some(link) = link.as_mut() {
-        if descriptor.is_some() {
-            if let Err(e) = link.ensure_connected() {
-                diag::warn!(Net, "udp connect: {e}");
-            } else if link.should_offer_connect() {
-                watch.offers += 1;
-                watch
-                    .first_offer
-                    .get_or_insert_with(std::time::Instant::now);
-            }
-        }
         match link.recv_ticks() {
             Ok(ticks) => {
                 for tick in ticks {
@@ -493,60 +477,15 @@ pub fn receive_ticks(
     }
 }
 
-fn connect_wait_line_applies(should_offer: bool, rejected: bool, has_connection: bool) -> bool {
-    should_offer && !rejected && !has_connection
-}
-
 fn note_join_link(watch: &mut JoinLinkWatch, link: &crate::transport::udp_session::UdpClientLink) {
-    let waited = |watch: &JoinLinkWatch| {
-        watch
-            .first_offer
-            .map(|start| start.elapsed().as_secs_f32())
-            .unwrap_or(0.0)
-    };
-    if link.connection.is_some() {
-        if !watch.connected {
-            watch.connected = true;
-            diag::info!(
-                Net,
-                "udp client accepted by {} as client {} after {:.1}s and {} Connect offer(s)",
-                link.server,
-                link.assigned_client.map(|c| c.0).unwrap_or(0),
-                waited(watch),
-                watch.offers
-            );
-        }
-        return;
+    if link.connection.is_some() && !watch.connected {
+        watch.connected = true;
+        diag::info!(
+            Net,
+            "udp client accepted as client {}",
+            link.assigned_client.map(|c| c.0).unwrap_or(0)
+        );
     }
-    if !connect_wait_line_applies(
-        link.should_offer_connect(),
-        link.handshake_reject().is_some(),
-        false,
-    ) {
-        return;
-    }
-    let now = std::time::Instant::now();
-    if watch
-        .last_line
-        .is_some_and(|last| last.elapsed().as_secs_f32() < JOIN_WAIT_LINE_SECS)
-    {
-        return;
-    }
-    watch.last_line = Some(now);
-
-    let ours = link.hello.content;
-    diag::warn!(
-        Net,
-        "udp client waiting on {}: {} Connect offer(s) over {:.1}s, no Accept and no Reject — \
-         protocol={} offering map={:016x} weapons={:016x} classes={:016x}",
-        link.server,
-        watch.offers,
-        waited(watch),
-        link.hello.protocol_version,
-        ours.map,
-        ours.weapons,
-        ours.classes
-    );
 }
 
 #[derive(Resource, Default)]
@@ -634,6 +573,7 @@ pub struct ReliableControlEvent(pub sim::SimEvent);
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SvcFrameWriters<'w> {
     sound: MessageWriter<'w, crate::SvcLocalSound>,
+    audio: MessageWriter<'w, crate::SvcScriptAudio>,
     card: MessageWriter<'w, crate::SvcCardSlotCmd>,
     menu: MessageWriter<'w, crate::SvcOpenMenuCmd>,
     splash: MessageWriter<'w, crate::SvcHudSplash>,
@@ -690,6 +630,9 @@ impl ReliableInbound<'_> {
             }
             match row {
                 crate::ReliableRow::Failure(_) => unreachable!("terminal handled before sequence"),
+                crate::ReliableRow::ScriptAudio(cmd) => {
+                    self.svc.audio.write(crate::SvcScriptAudio(cmd.clone()));
+                }
                 crate::ReliableRow::Sound(cmd) => {
                     self.svc.sound.write(crate::SvcLocalSound {
                         stop: cmd.stop,
@@ -763,7 +706,7 @@ fn apply_weapon_switch_requests(
 
 pub fn sample_client_input(
     (skate, mut minecraft): (Option<Res<frame::SkateMode>>, Option<ResMut<frame::MinecraftUi>>),
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut actions: ResMut<ClientActionInput>,
     mut look: ResMut<LookState>,
     mut template: ResMut<ClientCmdTemplate>,
@@ -777,8 +720,12 @@ pub fn sample_client_input(
     mut action_inbox: Option<ResMut<ClientActionInbox>>,
     mut request_ids: Option<ResMut<crate::ActionRequestIds>>,
     view: Option<Res<frame::ViewSubject>>,
-    (trace, mut cursor): (Option<ResMut<ClientPhaseTrace>>, ResMut<LocationCursor>),
+    (trace, aim_cursor): (
+        Option<ResMut<ClientPhaseTrace>>,
+        (ResMut<LocationCursor>, Res<crate::ViewweaponAim>),
+    ),
 ) {
+    let (mut cursor, aim) = aim_cursor;
     push_phase(trace, "Input");
     if !gate.local_cmds_enabled {
         actions.client.weapon_cycles.clear();
@@ -804,14 +751,16 @@ pub fn sample_client_input(
         actions.pad_move = [0.0; 2];
         actions.pad_look = [0.0; 2];
     }
-    // The controller's turn this frame, with aim assist over visible
-    // enemies: other players not on the local team, and a block world's
-    // mobs.
     if let Some(ps) = ps {
         let world = prediction.0.world();
-        let eye = [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current];
+        let eye = [
+            ps.origin[0],
+            ps.origin[1],
+            ps.origin[2] + ps.view_height_current,
+        ];
         let visible = |point: [f32; 3]| {
-            let hit = world.trace_world(eye, point, [0.0; 3], [0.0; 3], hud_iw4::OVERHEAD_TRACE_MASK);
+            let hit =
+                world.trace_world(eye, point, [0.0; 3], [0.0; 3], hud_iw4::OVERHEAD_TRACE_MASK);
             hit.fraction >= 1.0 && hit.startsolid == 0
         };
         let angles = [
@@ -821,19 +770,29 @@ pub fn sample_client_input(
         let (sp, cp) = angles[0].to_radians().sin_cos();
         let (sy, cy) = angles[1].to_radians().sin_cos();
         let forward = [cp * cy, cp * sy, -sp];
-        // In front of the player, allowing for the target's size.
         let in_front = |origin: [f32; 3], radius: f32| {
-            let d = [origin[0] - ps.origin[0], origin[1] - ps.origin[1], origin[2] - ps.origin[2]];
+            let d = [
+                origin[0] - ps.origin[0],
+                origin[1] - ps.origin[1],
+                origin[2] - ps.origin[2],
+            ];
             d[0] * forward[0] + d[1] * forward[1] + d[2] * forward[2] + radius >= 0.0
         };
         let mut targets: Vec<crate::client::pad_aim::AimTarget> = Vec::new();
         if actions.pad_aim_assist > 0 {
             const RADIUS: f32 = 10.0;
             let snapshot = presented.snapshot();
-            let team = |id: sim::ClientId| snapshot.and_then(|s| s.meta.for_client(id)).map(|m| m.client_state_team);
+            let team = |id: sim::ClientId| {
+                snapshot
+                    .and_then(|s| s.meta.for_client(id))
+                    .map(|m| m.client_state_team)
+            };
             let teams = snapshot.is_some_and(|s| s.meta.kind.is_team());
             let mine = team(local.0);
-            for id in snapshot.into_iter().flat_map(|s| s.players.iter().map(|(id, _)| *id)) {
+            for id in snapshot
+                .into_iter()
+                .flat_map(|s| s.players.iter().map(|(id, _)| *id))
+            {
                 if id == local.0 || (teams && team(id) == mine) {
                     continue;
                 }
@@ -876,8 +835,7 @@ pub fn sample_client_input(
         }
         let ranges = world
             .weapon_combat_row(playerstate_iw4::get_viewmodel_weapon_index(ps))
-            .map(|facts| facts.aim_assist)
-            .unwrap_or_default();
+            .map_or(weapon_iw4::AimAssistRanges::NONE, |facts| facts.aim_assist);
         let view = crate::client::pad_aim::AimView {
             eye,
             angles,
@@ -1112,14 +1070,21 @@ pub fn sample_client_input(
         }
     }
     let mut cmd = build_usercmd(&mut actions, &look, 0);
-    // Reload/use reloads when nothing usable is in reach.
-    if cmd.buttons & playerstate_iw4::buttons::USE_RELOAD != 0 && ps.is_some_and(|ps| ps.cursor_hint == 0) {
+    if cmd.buttons & playerstate_iw4::buttons::USE_RELOAD != 0
+        && ps.is_some_and(|ps| ps.cursor_hint == 0)
+    {
         cmd.buttons |= playerstate_iw4::buttons::RELOAD;
     }
     if minecraft.as_ref().is_some_and(|ui| ui.active && ui.holding_item) {
         cmd.buttons &= !(playerstate_iw4::buttons::ATTACK | playerstate_iw4::buttons::ADS);
     }
     look.angles = cmd.angles;
+    if !frozen
+        && aim.live
+        && ps.is_some_and(|ps| aim.weapon == playerstate_iw4::get_viewmodel_weapon_index(ps))
+    {
+        cmd.gun_angle_offset = aim.angle_offset;
+    }
     if let Some((mouse_x, mouse_y)) = remote_mouse {
         cmd.remote_control = remote_control_axes(&actions, mouse_x, mouse_y);
         cmd.buttons |= playerstate_iw4::buttons::REMOTE_CONTROL;
@@ -1178,15 +1143,13 @@ pub fn sample_client_input(
 const AIM_AUTOMELEE_RANGE: f32 = 128.0;
 const MELEE_REGION_TAN_X: f32 = 0.849 * 0.5;
 const MELEE_REGION_TAN_Y: f32 = 0.478 * 0.5;
-const PMF_PRONE: u32 = 0x1;
-
 fn melee_charge_target(
     ps: &playerstate_iw4::PlayerState,
     local: sim::ClientId,
     snapshot: &Snapshot,
     world: &sim::SimWorld,
 ) -> Option<(f32, u8)> {
-    if ps.pm_flags & PMF_PRONE != 0 {
+    if ps.pm_flags & playerstate_iw4::pm_flags::PRONE != 0 {
         return None;
     }
     let local_team = snapshot.meta.for_client(local)?.client_state_team;
@@ -1315,7 +1278,8 @@ pub const BACKLOG_STALL_MS: i32 = 1000;
 /// How many stalls the link may take before the session is failed for real. A
 /// hitch costs one and is recovered from; an authority that has genuinely gone
 /// away keeps earning them and fails once they add up.
-pub const BACKLOG_STALLS_BEFORE_FAIL: u32 = 3;
+pub const BACKLOG_STALLS_BEFORE_FAIL: u32 =
+    (master_protocol::SESSION_IDLE.as_millis() / BACKLOG_STALL_MS as u128) as u32 - 1;
 
 #[derive(Debug, Default)]
 pub struct BacklogStalls {
@@ -1954,6 +1918,7 @@ pub fn register_client_runtime(app: &mut App) {
         .init_resource::<ClientShotSamples>()
         .init_resource::<crate::Scoreboard>()
         .add_message::<crate::SvcLocalSound>()
+        .add_message::<crate::SvcScriptAudio>()
         .add_message::<crate::SvcCardSlotCmd>()
         .add_message::<crate::SvcOpenMenuCmd>()
         .add_message::<crate::SvcHudSplash>()

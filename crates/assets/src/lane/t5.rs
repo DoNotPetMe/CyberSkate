@@ -430,6 +430,7 @@ impl ZoneLane for T5Lane {
                 };
                 let min = draw.stats.min;
                 let max = draw.stats.max;
+                let world_bounds = draw.stats.bounds;
                 LoadedWorld {
                     scripts,
                     sound: map_sound,
@@ -460,8 +461,7 @@ impl ZoneLane for T5Lane {
                         createart_name,
                         min,
                         max,
-
-                        world_bounds: None,
+                        world_bounds,
                         policy: WorldDrawPolicy::t5(),
                     },
                     collision: clip,
@@ -575,20 +575,46 @@ impl ZoneLane for T5Lane {
         let captured = sink.weapons.len();
 
         sink.weapons.resolve_reticles(&sink.materials);
+        sink.weapons.resolve_projectile_fx_edges(&sink.fx);
+        if let Some(table) = sink.impact_fx.table.as_ref() {
+            sink.weapons.resolve_projectile_impact_fx(table);
+        }
         sink.weapons
             .resolve_combat_fx(&sink.fx, &asset_game::TracerCatalog::default());
         let leftover_fx = sink.fx.len();
         let leftover_fx_gaps = sink.fx.capture_gaps;
-        for key in sink.weapons.rocket_model_hints() {
-            if let Some(entry) = sink.projectile_meshes.get(key.namespace, &key.name) {
-                sink.fpv_meshes
-                    .insert_in(key.namespace, entry.skel.clone(), Some(&sink.materials));
-            }
-        }
         let projectile_keys = sink.weapons.projectile_model_hints();
-        sink.projectile_meshes.keep_referenced(&projectile_keys);
         let mut weapons = sink.weapons.into_build();
         weapons.stamp_namespace(asset_core::AssetNamespace::T5);
+        let namespace = asset_core::AssetNamespace::T5;
+        for id in 1..=weapons.len() as u32 {
+            for name in [
+                weapons.gun_xmodel_of(id),
+                weapons.hand_xmodel_of(id),
+                weapons.rocket_model_of(id),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if sink.fpv_meshes.get(namespace, name).is_none()
+                    && let Some(entry) = sink.projectile_meshes.get(namespace, name)
+                {
+                    sink.fpv_meshes
+                        .insert_in(namespace, entry.skel.clone(), Some(&sink.materials));
+                }
+            }
+            if let Some(name) = weapons.world_model_of(id)
+                && sink.world_weapons.get(namespace, name).is_none()
+                && let Some(entry) = sink.projectile_meshes.get(namespace, name)
+            {
+                sink.world_weapons.insert_in(
+                    namespace,
+                    (*entry.skel).clone(),
+                    Some(&sink.materials),
+                );
+            }
+        }
+        sink.projectile_meshes.keep_referenced(&projectile_keys);
         weapons.apply_stats_tables(sink.stats_tables.values());
         weapons.resolve_sz_xanim_edges(&sink.xanims);
         weapons.resolve_fpv_mesh_edges(&sink.fpv_meshes);

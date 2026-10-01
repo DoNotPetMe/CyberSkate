@@ -962,11 +962,6 @@ fn player_entity(world: &World, id: ClientId) -> Option<Entity> {
         .map(|(_, entity)| *entity)
 }
 
-#[allow(dead_code)]
-pub(crate) fn player_payload_entity(world: &World, id: ClientId) -> Option<Entity> {
-    player_entity(world, id)
-}
-
 pub(crate) fn player_ref(world: &World, id: ClientId) -> Option<&PlayerState> {
     world
         .get::<PlayerRow>(player_entity(world, id)?)

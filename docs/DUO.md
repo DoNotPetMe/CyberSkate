@@ -7,7 +7,7 @@ windows. It uses `IW4L_GAMES` and the `IW4L_MASTER_*` connection settings from
 ```bash
 make duo
 make duo ZONE=iw4:mp_afghan MODE=dm
-make duo HOST_CMDS='spawn assault; wait 20s; dump host' CLIENT_CMDS='spawn assault'
+make duo HOST_CMDS='spawn 0; wait 20s; dump host' CLIENT_CMDS='spawn 0'
 ```
 
 Every run creates a fresh public lobby on the master. The host's actual lobby
@@ -17,7 +17,7 @@ membership. There is no browser-row selection or fixed lobby startup delay.
 GSC still owns classes, countdown, scoring, death and respawn.
 
 `HOST_CMDS` and `CLIENT_CMDS` run after `wait world`; both default to
-`spawn assault`. During the run, type into the terminal:
+`spawn 0`. During the run, type into the terminal:
 
 ```text
 host dump host

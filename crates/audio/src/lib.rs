@@ -1,6 +1,9 @@
 mod aliases;
 mod ambient;
+mod attenuation;
 mod backend;
+mod background;
+mod breath;
 mod clip_store;
 mod emit;
 mod entity_events;
@@ -47,7 +50,12 @@ pub use start::{
 pub use voice::VoiceOccupancy;
 
 mod destructible_loops;
+mod match_bus;
 mod match_set;
 mod match_voices;
 
 mod weapon_lock;
+
+mod script_ambient;
+mod script_mix;
+mod script_music;

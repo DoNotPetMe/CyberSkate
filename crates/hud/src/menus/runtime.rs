@@ -359,6 +359,13 @@ impl Runner<'_, '_> {
         diag::info!(Ui, "menu open: {}", def.name);
         let name = def.name.clone();
         self.run_events(&name, None, &def.handlers.open);
+        if self
+            .menus
+            .get_mut(&name)
+            .is_some_and(|open| open.focus.is_none())
+        {
+            self.focus_step(&name, 1, true);
+        }
     }
 
     pub(crate) fn close(&mut self, name: &str) {
@@ -484,12 +491,6 @@ impl Runner<'_, '_> {
         self.set_focus(menu, next);
     }
 
-    /// Moves focus to the nearest item on screen in a direction, as a
-    /// controller moves it: up and down within the focused item's column,
-    /// wrapping at its ends; left and right to the nearest item in the next
-    /// column. Menu files list items in no particular screen order, so
-    /// stepping through them in file order jumps about. Returns whether
-    /// focus moved.
     pub(crate) fn focus_nav(&mut self, menu: &str, dx: i32, dy: i32) -> bool {
         let catalog = self.catalog;
         let Some(def) = catalog.get(menu) else {
@@ -501,7 +502,8 @@ impl Runner<'_, '_> {
             .filter(|&i| is_focusable(&def.items[i]) && visible.contains(&i))
             .map(|i| (i, nav_rect(&def.items[i])))
             .collect();
-        let Some(&(at, here)) = current.and_then(|c| candidates.iter().find(|(i, _)| *i == c)) else {
+        let Some(&(at, here)) = current.and_then(|c| candidates.iter().find(|(i, _)| *i == c))
+        else {
             if dx != 0 {
                 return false;
             }
@@ -510,7 +512,6 @@ impl Runner<'_, '_> {
         };
         let centre = |r: [f32; 4]| [(r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5];
         let c = centre(here);
-        // Two items share a column when either's centre lies over the other.
         let same_column = |r: [f32; 4]| {
             let o = centre(r);
             (r[0] <= c[0] && c[0] <= r[2]) || (here[0] <= o[0] && o[0] <= here[2])
@@ -527,11 +528,10 @@ impl Runner<'_, '_> {
                     let db = (centre(b.1)[1] - c[1]).abs();
                     da.total_cmp(&db)
                 });
-            // Past the end, round to the far end of the column.
             let wrapped = || {
-                column.iter().min_by(|a, b| {
-                    (centre(a.1)[1] * dir).total_cmp(&(centre(b.1)[1] * dir))
-                })
+                column
+                    .iter()
+                    .min_by(|a, b| (centre(a.1)[1] * dir).total_cmp(&(centre(b.1)[1] * dir)))
             };
             match ahead.or_else(wrapped) {
                 Some((index, _)) => *index,
@@ -696,8 +696,6 @@ impl Runner<'_, '_> {
     }
 }
 
-/// An item's rectangle on the 640 by 480 virtual screen, its alignment
-/// resolved closely enough to order items by: left, top, right, bottom.
 fn nav_rect(item: &asset_game::MenuItem) -> [f32; 4] {
     let r = &item.rect;
     let ox = match r.horz_align {

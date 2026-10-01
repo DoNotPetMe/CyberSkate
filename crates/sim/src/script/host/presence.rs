@@ -19,6 +19,7 @@ pub(crate) struct Shown {
 }
 
 struct Wanted {
+    collision_only: bool,
     object: u64,
     presence: ScriptModelId,
     origin: [f32; 3],
@@ -53,6 +54,29 @@ fn model_field(runtime: &mut Runtime, id: u64) -> Option<Arc<str>> {
     match runtime.object_field(id, "model") {
         Value::String(model) if !model.is_empty() && !model.starts_with('*') => Some(model),
         _ => None,
+    }
+}
+
+pub(crate) fn initialize_map_models(world: &mut World) {
+    let models: BTreeMap<ScriptModelId, Arc<str>> = FrameWorld::from_world(world)
+        .entity_collision_capabilities()
+        .iter()
+        .filter_map(|row| {
+            Some((
+                row.owner.script_model()?,
+                row.dobj.as_ref()?.current_model.as_str().into(),
+            ))
+        })
+        .collect();
+    let mut runtime = world.resource_mut::<Runtime>();
+    let objects: Vec<_> = runtime
+        .entities
+        .iter()
+        .filter(|(_, entity)| entity.kind == EntityKind::Map)
+        .filter_map(|(object, entity)| Some((*object, models.get(&entity.presence?)?.clone())))
+        .collect();
+    for (object, model) in objects {
+        runtime.set_object_field(object, "model", Value::String(model));
     }
 }
 
@@ -141,6 +165,7 @@ pub(crate) fn sync_presence(world: &mut World) {
     super::controls::sync_script_locks(world);
     super::triggers::dispatch_triggers(world);
     present(world, now);
+    settle_collision(world);
     resolve_link_tags(world);
 }
 
@@ -195,7 +220,7 @@ fn present(world: &mut World, now: i32) {
         });
         let posed = !near(shown.origin, want.origin) || !near_angles(shown.angles, want.angles);
         if let Some(mover) = frame.script_mover_mut_by_number(mover.state.number) {
-            if want.hidden {
+            if want.hidden || want.collision_only {
                 mover.state.e_flags |= entity_iw4::CG_SCRIPT_MOVER_NODRAW;
             } else {
                 mover.state.e_flags &= !entity_iw4::CG_SCRIPT_MOVER_NODRAW;
@@ -232,7 +257,7 @@ fn present(world: &mut World, now: i32) {
         let Some(entity) = runtime.entities.get_mut(&object) else {
             continue;
         };
-        if let Some(number) = number {
+        if let Some(number) = number.filter(|_| !matches!(entity.kind, EntityKind::Missile(_))) {
             entity.number = number;
         }
         runtime.shown.insert(object, shown);
@@ -334,6 +359,7 @@ fn collect_wanted(world: &mut World) -> Vec<Wanted> {
         let part_ops = std::mem::take(&mut entity.part_ops);
         let anim_op = entity.anim_op.take();
         let attachments = entity.attachments.clone();
+        let collision_only = matches!(entity.kind, EntityKind::Missile(_));
         let unchanged = part_ops.is_empty()
             && anim_op.is_none()
             && runtime.shown.get(&object).is_some_and(|shown| {
@@ -350,6 +376,7 @@ fn collect_wanted(world: &mut World) -> Vec<Wanted> {
             continue;
         }
         wanted.push(Wanted {
+            collision_only,
             object,
             presence,
             origin,
@@ -372,6 +399,10 @@ fn present_model(frame: &mut FrameWorld, want: &Wanted) {
         .as_deref()
         .and_then(|model| frame.model_capability(model))
         .flatten();
+    let anim = want
+        .anim_op
+        .as_ref()
+        .and_then(|op| op.as_deref().and_then(|clip| frame.script_model_anim(clip)));
     let Some(row) = frame.collision_owner_mut(want.presence) else {
         return;
     };
@@ -405,7 +436,13 @@ fn present_model(frame: &mut FrameWorld, want: &Wanted) {
         dobj.set_tag_hidden(tag, *hidden);
     }
     match &want.anim_op {
-        Some(Some(clip)) => dobj.begin_script_model_play_anim(clip, true, 1.0),
+        Some(Some(clip)) => {
+            let anim = anim.unwrap_or(crate::ScriptModelPlayAnim {
+                looping: false,
+                frequency: 0.0,
+            });
+            dobj.begin_script_model_play_anim(clip, anim.looping, anim.frequency);
+        }
         Some(None) => dobj.clear_script_model_play_anim(),
         None => {}
     }
@@ -415,25 +452,31 @@ const UNPRESENTED_LOOP_OWNER: u32 = 0x2000_0000;
 
 fn publish_loop_sounds(world: &mut World) {
     let mut runtime = world.resource_mut::<Runtime>();
-    let speaking: Vec<(u64, Option<ScriptModelId>, Arc<str>)> = runtime
+    let speaking: Vec<(u64, Option<ScriptModelId>, Arc<str>, i32)> = runtime
         .entities
         .iter()
-        .filter_map(|(object, e)| Some((*object, e.presence, e.loop_sound.clone()?)))
+        .filter_map(|(object, e)| Some((*object, e.presence, e.loop_sound.clone()?, e.number)))
         .collect();
-    let placed: Vec<(ScriptModelId, Arc<str>, [f32; 3])> = speaking
+    let placed: Vec<(ScriptModelId, Arc<str>, [f32; 3], Option<u32>)> = speaking
         .into_iter()
-        .map(|(object, presence, alias)| {
+        .map(|(object, presence, alias, number)| {
             let owner = presence.unwrap_or_else(|| {
                 ScriptModelId::from_wire(UNPRESENTED_LOOP_OWNER | (object as u32 & 0x0fff_ffff))
             });
-            (owner, alias, vector(&mut runtime, object, "origin"))
+            (
+                owner,
+                alias,
+                vector(&mut runtime, object, "origin"),
+                u32::try_from(number).ok(),
+            )
         })
         .collect();
     let mut frame = FrameWorld::from_world(world);
     let rows = placed
         .into_iter()
         .map(
-            |(owner, alias, origin)| crate::world_objects::DestructibleLoopSound {
+            |(owner, alias, origin, snd_ent)| crate::world_objects::DestructibleLoopSound {
+                snd_ent,
                 owner,
                 alias_index: frame.sound_alias_index(&alias),
                 origin,

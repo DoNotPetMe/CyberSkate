@@ -34,6 +34,9 @@ pub struct OffhandInvRow {
     pub offhand_hold_is_cancelable: Option<bool>,
 
     pub weap_type: i32,
+    pub has_detonator: bool,
+    pub detonate_delay_ms: i32,
+    pub detonate_time_ms: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,9 +104,13 @@ fn offhand_hold_cancel_requested(cmd: &WeaponCmd) -> bool {
     if cmd.buttons & buttons::OFFHAND_HOLD_CANCEL == 0 {
         return false;
     }
-    offhand_row(&cmd.offhand, cmd.offhand.off_hand_index.max(0) as u32)
-        .and_then(|r| r.offhand_hold_is_cancelable)
-        .unwrap_or_else(|| panic!("offhand hold cancel flag missing in source format"))
+    // A client's usercmd can set off_hand_index to a weapon it does not hold.
+    let weapon = cmd.offhand.off_hand_index.max(0) as u32;
+    weapon != 0
+        && offhand_row(&cmd.offhand, weapon).is_some_and(|r| {
+            r.offhand_hold_is_cancelable
+                .unwrap_or_else(|| panic!("offhand hold cancel flag missing in source format"))
+        })
 }
 
 fn admits_check_for_offhand(weaponstate: i32) -> bool {
@@ -211,6 +218,20 @@ pub fn weapon_offhand_prepare(
     hand: &mut WeaponHandState,
     cmd: &mut WeaponCmd,
 ) -> Option<WeaponTickEvent> {
+    let row = offhand_row(&cmd.offhand, cmd.offhand.off_hand_index as u32);
+    if let Some(row) = row.filter(|row| row.has_detonator && row.ammo <= 0) {
+        hand.weaponstate = WeaponState::Offhand as i32;
+        hand.weapon_time = row.detonate_time_ms.max(1);
+        hand.weapon_delay = row.detonate_delay_ms.max(1);
+        cmd.weap_flags |= weap_flags::OFFHAND_VIEW;
+        if cmd.pm_type < 8 {
+            start_weapon_anim(
+                &mut hand.weap_anim,
+                crate::weap_anim::weap_anim_event::DETONATE,
+            );
+        }
+        return None;
+    }
     let hold = offhand_row(&cmd.offhand, cmd.offhand.off_hand_index as u32)
         .map(|r| r.hold_fire_time_ms)
         .unwrap_or(0);
@@ -350,6 +371,16 @@ pub fn weapon_advance_offhand(
                 None
             }
         }
+        Ok(WeaponState::Offhand) => {
+            if delayed_action {
+                Some(WeaponTickEvent::Detonated {
+                    weapon: cmd.offhand.off_hand_index as u32,
+                })
+            } else {
+                weapon_offhand_end(hand, cmd);
+                None
+            }
+        }
         Ok(WeaponState::OffhandEnd) if hand.weapon_time <= 0 => {
             crate::melee::weapon_settle_ready(
                 hand,
@@ -383,7 +414,7 @@ pub fn weapon_check_for_offhand(
     if (cmd.e_flags & 0x100000) != 0 {
         return None;
     }
-    if (cmd.pm_flags & pm_flags::BLOCK_OFFHAND_OTS) != 0 {
+    if (cmd.pm_flags & pm_flags::SPRINTING) != 0 {
         return None;
     }
     if !admits_check_for_offhand(hand.weaponstate) {
@@ -403,6 +434,15 @@ pub fn weapon_check_for_offhand(
     };
 
     let picked = get_first_available_offhand(&cmd.offhand.inventory, wanted);
+    let picked = if picked == 0 {
+        cmd.offhand
+            .inventory
+            .iter()
+            .find(|row| row.weapon != 0 && row.offhand_class == wanted && row.has_detonator)
+            .map_or(0, |row| row.weapon)
+    } else {
+        picked
+    };
     if picked == 0 {
         return None;
     }

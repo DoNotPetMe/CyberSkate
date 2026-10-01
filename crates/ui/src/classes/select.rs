@@ -151,7 +151,7 @@ pub fn commit_class_equip(
     }
     let request_id = seq.allocate();
     highlight.0 = index;
-    store.commit_equip(index);
+    store.selected = index;
     pending.0 = Some(ClassEquipRequest {
         request_id,
         class_index: index,
@@ -165,6 +165,7 @@ pub fn commit_class_equip(
 }
 
 pub fn accept_class_equip(
+    store: &mut SessionClassStore,
     phase: &mut ClassSelectPhase,
     overlay: &mut ClassSelectOverlayOpen,
     request_id: u32,
@@ -172,8 +173,9 @@ pub fn accept_class_equip(
     match *phase {
         ClassSelectPhase::Pending {
             request_id: pending,
-            ..
+            class_index,
         } if pending == request_id => {
+            store.equipped = Some(class_index);
             *phase = ClassSelectPhase::Interactive;
             overlay.0 = false;
             true

@@ -1,3 +1,4 @@
+use render_anim::geometry::install_retained_packed;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -1204,26 +1205,6 @@ fn append_packed_source(
         _ => {
             *packed_ok = false;
             packed.clear();
-        }
-    }
-}
-
-fn install_retained_packed(
-    packed_ok: bool,
-    packed: Vec<[u8; asset_iw4::size::GFX_PACKED_VERTEX]>,
-    decoded_count: usize,
-    empty: &'static str,
-    missing: &'static str,
-) -> asset_world::PackedVertexPayload {
-    if packed_ok && packed.len() == decoded_count && !packed.is_empty() {
-        asset_world::PackedVertexPayload::Iw4(packed)
-    } else if decoded_count == 0 {
-        asset_world::PackedVertexPayload::Unavailable {
-            source_layout: empty,
-        }
-    } else {
-        asset_world::PackedVertexPayload::Unavailable {
-            source_layout: missing,
         }
     }
 }

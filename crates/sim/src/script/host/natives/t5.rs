@@ -344,6 +344,7 @@ fn do_damage(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Valu
         .resource_mut::<Runtime>()
         .hits
         .push(crate::script::ScriptHit {
+            piece: None,
             target,
             amount,
             origin,
@@ -403,13 +404,10 @@ fn stats_number(world: &World, reference: &str) -> i32 {
     stats_cell(world, reference, 0).map_or(0, |n| super::iw4::atoi(&n))
 }
 
-fn profile_item(world: &mut World, class: &str, slot: &str) -> i32 {
-    let Some(def) = profile_class(class).and_then(|id| {
-        FrameWorld::from_world(world)
-            .bootstrap_ref()
-            .class(id)
-            .cloned()
-    }) else {
+fn profile_item(world: &mut World, client: u32, class: &str, slot: &str) -> i32 {
+    let Some(def) = profile_class(class)
+        .and_then(|id| super::super::players::personal_class(world, client, id))
+    else {
         return 0;
     };
     let weapon_slot = |prefix: &str| slot.strip_prefix(prefix).map(|rest| rest.to_owned());
@@ -821,8 +819,8 @@ fn register_script(registry: &mut NativeRegistry) {
         |world, receiver, args| {
             let class = string(args, 0)?;
             let slot = string(args, 1)?.to_ascii_lowercase();
-            player_id(world, receiver)?;
-            Ok(Value::Int(profile_item(world, &class, &slot)))
+            let client = player_id(world, receiver)?;
+            Ok(Value::Int(profile_item(world, client, &class, &slot)))
         },
     );
     registry.register(Method, "setenemymodel", |world, receiver, args| {
@@ -872,7 +870,7 @@ fn register_script(registry: &mut NativeRegistry) {
     registry.register(Function, "playsoundatposition", |world, _, args| {
         let alias = string(args, 0)?;
         let origin = vector(args, 1)?;
-        super::engine::play_sound_at(world, origin, &alias);
+        super::engine::play_sound_at(world, origin, &alias)?;
         Ok(Value::Undefined)
     });
     registry.register(Function, "getdroppedweapons", |world, _, _| {
@@ -1466,8 +1464,8 @@ fn register_refused(registry: &mut NativeRegistry) {
     refused!(Function: "getcustomclassloadoutitem", "getcustomclassmodifier"
         => "custom game mode classes are not loaded");
 
-    refused!(Function: "getmaxvehicles", "spawnvehicle"
-        => "vehicles are not simulated");
+    refused!(Function: "getmaxvehicles"
+        => "T5 vehicle limits are not configured");
     refused!(Method: "getoccupantseat", "getseatoccupant", "getvehoccupants", "usevehicle",
         "launchvehicle", "makevehicleunusable", "setvehicleteam", "vehgetmodel",
         "gettreadhealth", "getspeed", "getspeedmph", "setspeed", "isvehicleimmunetodamage",

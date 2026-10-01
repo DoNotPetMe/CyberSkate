@@ -632,6 +632,8 @@ pub struct MapEntsGeometry {
     pub trigger_slab_count: usize,
     pub entity_string: Option<Ptr>,
     pub entity_chars: usize,
+    pub stages: Option<Ptr>,
+    pub stage_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1133,6 +1135,7 @@ pub struct WeaponGeometry {
 
     pub inherits_perks: bool,
 
+    pub ads_reload_trans_time_ms: i32,
     pub ads_in_rate: f32,
 
     pub ads_out_rate: f32,
@@ -1203,6 +1206,8 @@ pub struct WeaponGeometry {
     pub penetrate_multiplier: f32,
 
     pub rifle_bullet: bool,
+    pub ricochet_chance: f32,
+    pub explosive_bullet: bool,
 
     pub inventory_type: i32,
 
@@ -1251,10 +1256,10 @@ pub struct WeaponGeometry {
     pub sprint_loop_time_ms: i32,
 
     pub sprint_drop_time_ms: i32,
+    pub stunned_start_time_ms: i32,
+    pub stunned_end_time_ms: i32,
 
     pub fuse_time_ms: i32,
-    /// Aim assist ranges: auto aim's, and the slowdown and lock-on's from
-    /// the hip and down the sight.
     pub auto_aim_range: f32,
     pub aim_assist_range: f32,
     pub aim_assist_range_ads: f32,
@@ -1263,6 +1268,10 @@ pub struct WeaponGeometry {
 
     pub clip_only: bool,
 
+    pub has_detonator: bool,
+    pub detonate_delay_ms: i32,
+    pub detonate_time_ms: i32,
+    pub projectile_rotates: bool,
     pub timed_detonation: bool,
 
     pub proj_impact_explode: bool,
@@ -1274,8 +1283,11 @@ pub struct WeaponGeometry {
 
     pub explosion_inner_damage: i32,
     pub explosion_outer_damage: i32,
+    pub damage_cone_angle: f32,
 
     pub missile_guidance: i32,
+    pub ignition_delay_ms: i32,
+    pub require_lock_to_fire: bool,
     pub stickiness: i32,
     pub projectile_speed: i32,
     pub projectile_speed_up: i32,

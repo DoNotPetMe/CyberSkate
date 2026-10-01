@@ -59,17 +59,29 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
     catalog.load_definitions(include_str!("../menus/controller.json"))?;
     let has_controller_page = catalog.get("options_controller").is_some();
     for (name, menu) in &mut catalog.menus {
-        if let Some(chat) = menu
+        if matches!(name.as_str(), "popup_endgame" | "popup_endgame_ranked") {
+            for item in &mut menu.items {
+                if item.name == "button_yes" {
+                    item.handlers.action = vec![asset_game::MenuEvent::Script(
+                        "play mouse_click; close self; exec \"disconnect\";".into(),
+                    )];
+                }
+            }
+        }
+        if let Some(settings_link) = menu
             .items
             .iter()
-            .find(|item| item.text_key == "@MENU_CHAT")
+            .find(|item| {
+                item.item_type == 1
+                    && matches!(item.text_key.as_str(), "@MENU_CHAT" | "@MENU_VOICE")
+            })
             .cloned()
             && menu
                 .items
                 .iter()
                 .any(|item| item.text_key == "@MENU_RESET_SYSTEM_DEFAULTS")
         {
-            let mut multiplayer = chat;
+            let mut multiplayer = settings_link;
             multiplayer.name = "multiplayer_settings".into();
             multiplayer.text_key = "@MENU_MULTIPLAYER_OPTIONS".into();
             multiplayer.rect.y = 88.0;

@@ -22,8 +22,8 @@ mod debug_vision;
 mod diagnostics;
 pub mod editor;
 mod feature_dispatch;
-mod gamepad;
 mod frontend;
+mod gamepad;
 pub mod input;
 pub mod plugin;
 pub mod registry;
@@ -34,8 +34,8 @@ mod user_settings;
 mod weapon_dispatch;
 
 pub use binds::{
-    BINDABLE_KEYS, BindButton, BindInputs, DEFAULT_CONTROLS, KeyBinds, PAD_LAYOUT_NAMES, PadButton,
-    display_button, host_keynum, pad_layout, parse_button_name, parse_key_name,
+    BINDABLE_KEYS, BindButton, BindInputs, DEFAULT_CONTROLS, KeyBinds, PadButton, display_button,
+    host_keynum, parse_button_name, parse_key_name,
 };
 pub use class_dispatch::class_completions;
 pub use command::{ConsoleCommand, ConsoleQueue, SubmittedCommand};

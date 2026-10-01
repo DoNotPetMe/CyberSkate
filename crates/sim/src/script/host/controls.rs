@@ -13,10 +13,10 @@ mod pof {
     pub const REMOTE_CAMERA_SOUNDS: u32 = 0x20;
     pub const ALT_SCENE_REAR_VIEW: u32 = 0x40;
     pub const EMP_JAMMED: u32 = 0x400;
-    pub const AC130: u32 = 0x8000;
+    pub const AC130: u32 = playerstate_iw4::other_flags::AC130;
 }
 
-pub(crate) const SCRIPT_LOCK: u8 = 0x40;
+const POINT_LOCK: u8 = 0x40;
 const LOCKING: u8 = 1;
 const LOCKED: u8 = 2;
 const TOP: u8 = 4;
@@ -29,12 +29,6 @@ pub(crate) struct MiniMap {
     upper_left: [f32; 2],
     north: [f32; 2],
     size: [f32; 2],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ScriptLock {
-    target: u64,
-    offset: [f32; 3],
 }
 
 fn with_player<T>(
@@ -76,12 +70,15 @@ fn edit_lock(
     let ps = *frame.player(id).ok_or("player has disconnected")?;
     let meta = frame.client_meta_mut(id);
     let life = meta.life_sequence.0;
+    if meta.weapon_lock.weapon != ps.weapon || meta.weapon_lock.life != life {
+        meta.weapon_lock = crate::WeaponLock {
+            weapon: ps.weapon,
+            life,
+            ..Default::default()
+        };
+    }
     edit(&mut meta.weapon_lock, &ps, life);
     Ok(client)
-}
-
-fn lock_target(world: &World, args: &[Value]) -> Result<u64, String> {
-    super::natives::engine::entity_id(world, super::args::arg(args, 0)?)
 }
 
 pub(crate) fn register(registry: &mut NativeRegistry) {
@@ -186,67 +183,84 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     });
     registry.register(Method, "stunplayer", |world, receiver, args| {
         let client = player(world, receiver)?;
-        let on = truthy(args, 0)?;
-        let mut frame = FrameWorld::from_world(world);
-        if frame.client_meta(ClientId(client)).is_some() {
-            frame.client_meta_mut(ClientId(client)).controls.stunned = on;
+        let seconds = float(args, 0)?;
+        let duration = (seconds * 1000.0 + 0.5).floor();
+        if !duration.is_finite() || duration < 0.0 || duration > i32::MAX as f32 {
+            return Err(format!("invalid stun duration {seconds}"));
+        }
+        let now = crate::level_time_ms(world.resource::<crate::step::StepRequest>().tick);
+        if let Some(ps) = FrameWorld::from_world(world).player_mut(ClientId(client)) {
+            ps.stun_time = now.wrapping_add(duration as i32);
         }
         Ok(Value::Undefined)
     });
 
+    registry.register(
+        Method,
+        "worldpointinreticle_circle",
+        |world, receiver, args| {
+            let point = glam::Vec3::from_array(vector(args, 0)?);
+            let fov = float(args, 1)?;
+            let radius = float(args, 2)?;
+            if !fov.is_finite() || fov <= 0.0 || fov >= 180.0 || !radius.is_finite() || radius < 0.0
+            {
+                return Err("invalid reticle field of view or radius".into());
+            }
+            with_player(world, receiver, |ps| {
+                let eye =
+                    glam::Vec3::from_array(ps.origin) + glam::Vec3::Z * ps.view_height_current;
+                let delta = point - eye;
+                let (forward, right, up) = math_iw4::angle_vectors(ps.viewangles);
+                let depth = delta.dot(glam::Vec3::from_array(forward));
+                let scale = 320.0 / (fov.to_radians() * 0.5).tan();
+                let x = delta.dot(glam::Vec3::from_array(right)) * scale;
+                let y = delta.dot(glam::Vec3::from_array(up)) * scale;
+                Ok(Value::Int(i32::from(
+                    depth > 0.0 && x * x + y * y < radius * radius * depth * depth,
+                )))
+            })
+        },
+    );
     registry.register(Method, "weaponlockstart", |world, receiver, args| {
-        let target = lock_target(world, args)?;
+        let aim = super::guidance::target(world, super::args::arg(args, 0)?, [0.0; 3])?;
         let now = now_ms(world);
-        let client = edit_lock(world, receiver, |lock, ps, life| {
+        edit_lock(world, receiver, |lock, ps, life| {
             *lock = crate::WeaponLock {
                 weapon: ps.weapon,
                 life,
-                flags: SCRIPT_LOCK | LOCKING,
-                sampled_at: now,
-                out_of_ads_at: now,
+                flags: (lock.flags & (TOO_CLOSE | NO_CLEARANCE))
+                    | LOCKING
+                    | if aim.is_point() { POINT_LOCK } else { 0 },
+                aim: Some(aim),
                 acquire_started_at: now,
                 ..Default::default()
             };
         })?;
-        world.resource_mut::<Runtime>().engine.weapon_locks.insert(
-            client,
-            ScriptLock {
-                target,
-                offset: [0.0; 3],
-            },
-        );
         sync_script_locks(world);
         Ok(Value::Undefined)
     });
     registry.register(Method, "weaponlockfinalize", |world, receiver, args| {
-        let target = lock_target(world, args)?;
         let offset = optional(args, 1, vector)?.unwrap_or([0.0; 3]);
+        let aim = super::guidance::target(world, super::args::arg(args, 0)?, offset)?;
         let top = optional(args, 2, int)?.unwrap_or(0) != 0;
-        let client = edit_lock(world, receiver, |lock, ps, life| {
-            if lock.flags & SCRIPT_LOCK == 0 || lock.life != life {
-                lock.weapon = ps.weapon;
-                lock.life = life;
-            }
-            lock.flags &= !(TOP | DIRECT);
-            lock.flags |= SCRIPT_LOCK | LOCKING | LOCKED | if top { TOP } else { DIRECT };
+        edit_lock(world, receiver, |lock, ps, life| {
+            lock.weapon = ps.weapon;
+            lock.life = life;
+            lock.aim = Some(aim);
+            lock.flags = (lock.flags & (TOO_CLOSE | NO_CLEARANCE))
+                | LOCKING
+                | LOCKED
+                | if aim.is_point() { POINT_LOCK } else { 0 }
+                | if top { TOP } else { DIRECT };
         })?;
-        world
-            .resource_mut::<Runtime>()
-            .engine
-            .weapon_locks
-            .insert(client, ScriptLock { target, offset });
         sync_script_locks(world);
         Ok(Value::Undefined)
     });
     registry.register(Method, "weaponlockfree", |world, receiver, _| {
-        let client = edit_lock(world, receiver, |lock, _, _| {
-            lock.flags &= !(SCRIPT_LOCK | LOCKING | LOCKED | TOP | DIRECT);
+        edit_lock(world, receiver, |lock, _, _| {
+            lock.flags &= !(POINT_LOCK | LOCKING | LOCKED | TOP | DIRECT);
+            lock.aim = None;
         })?;
-        world
-            .resource_mut::<Runtime>()
-            .engine
-            .weapon_locks
-            .remove(&client);
         Ok(Value::Undefined)
     });
     fn lock_bit(
@@ -327,38 +341,27 @@ fn now_ms(world: &World) -> i32 {
 }
 
 pub(crate) fn sync_script_locks(world: &mut World) {
-    let locks: Vec<(u32, ScriptLock)> = world
-        .resource::<Runtime>()
-        .engine
-        .weapon_locks
-        .iter()
-        .map(|(client, lock)| (*client, *lock))
-        .collect();
-    for (client, lock) in locks {
-        let origin = match super::players::entity_field(world, lock.target, "origin") {
-            Value::Vector(origin) => origin,
-            _ => continue,
+    let mut frame = FrameWorld::from_world(world);
+    for id in frame.client_ids_sorted() {
+        let Some(ps) = frame.player(id).copied() else {
+            continue;
         };
-        let mut frame = FrameWorld::from_world(world);
-        let id = ClientId(client);
-        if frame.client_meta(id).is_none() {
-            frame
-                .ecs()
-                .resource_mut::<Runtime>()
-                .engine
-                .weapon_locks
-                .remove(&client);
+        let Some(meta) = frame.client_meta(id) else {
             continue;
+        };
+        let lock = meta.weapon_lock;
+        let valid = lock.weapon == ps.weapon
+            && lock.life == meta.life_sequence.0
+            && meta.lifecycle == crate::ClientLifecycle::Alive;
+        let point = lock
+            .aim
+            .filter(|_| valid)
+            .and_then(|aim| aim.resolve(&frame));
+        if let Some(point) = point {
+            frame.client_meta_mut(id).weapon_lock.target = point;
+        } else if lock.aim.is_some() {
+            frame.client_meta_mut(id).weapon_lock = crate::WeaponLock::default();
         }
-        let meta = frame.client_meta_mut(id);
-        if meta.weapon_lock.flags & SCRIPT_LOCK == 0 {
-            continue;
-        }
-        meta.weapon_lock.target = [
-            origin[0] + lock.offset[0],
-            origin[1] + lock.offset[1],
-            origin[2] + lock.offset[2],
-        ];
     }
 }
 

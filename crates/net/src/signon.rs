@@ -269,7 +269,6 @@ pub fn drive_client_admission_facts(
     mut torn: bevy::prelude::MessageReader<MatchTornDown>,
     link: Option<bevy::prelude::Res<UdpClientLink>>,
     bridge: Option<bevy::prelude::Res<MasterBridge>>,
-    adopted: bevy::prelude::Res<crate::LastAdoptedSnapshot>,
 ) {
     for fact in torn.read() {
         admission.core.apply_teardown(*fact);
@@ -277,14 +276,6 @@ pub fn drive_client_admission_facts(
     for fact in installed.read() {
         admission.core.apply_start(fact.load_key.match_key);
         admission.core.apply_install(fact.load_key);
-    }
-    if link
-        .as_ref()
-        .is_some_and(|link| link.has_applied_direct_snapshot())
-        && adopted.next().is_some()
-        && let Some(load) = admission.core.installed()
-    {
-        admission.core.apply_direct_adopted(load);
     }
     let key = live_match_key(bridge.as_deref());
     if !key.is_none() {
@@ -319,6 +310,7 @@ pub fn drive_client_admission_facts(
 }
 
 pub fn drive_signon(
+    dvars: bevy::prelude::Res<frame::UiMenuDvars>,
     mut signon: bevy::prelude::ResMut<SignonState>,
     mut admission: bevy::prelude::ResMut<ClientAdmission>,
     role: bevy::prelude::Res<RuntimeRole>,
@@ -327,6 +319,9 @@ pub fn drive_signon(
     mut incarnation: bevy::prelude::Local<Option<u64>>,
     mut reported_terminal: bevy::prelude::Local<Option<u64>>,
 ) {
+    if dvars.get("ui_password_pending") == Some("1") {
+        return;
+    }
     let current = bridge.as_ref().map(|bridge| bridge.incarnation());
     if *incarnation != current {
         *incarnation = current;

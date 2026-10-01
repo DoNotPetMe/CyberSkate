@@ -29,6 +29,9 @@ impl SnapshotDelta {
     pub fn decode(input: &mut WireReader<'_>) -> Result<Self, WireError> {
         let tick = Tick(input.get_u32()?);
         let length = input.get_u32()? as usize;
+        if length > input.remaining() {
+            return Err(WireError::Malformed("snapshot delta longer than its frame"));
+        }
         let mut bytes = vec![0u8; length];
         input.get_bytes(&mut bytes)?;
         Ok(Self { tick, bytes })
@@ -156,17 +159,22 @@ impl SnapshotDecoder {
             decode_player(&mut input, &mut state)?;
             players.push((client, state));
         }
-        let projectile_delta = decode_projectile_delta(&mut input, &mut self.projectile_baseline)?;
-        self.last_projectile_delta = projectile_delta.clone();
-        let mut projectiles: Vec<_> = self.projectile_baseline.values().copied().collect();
-        projectiles.sort_by_key(|p| p.id.0);
-
+        let projectile_delta = decode_projectile_delta(&mut input)?;
         if !input.is_empty() {
             return Err(WireError::Malformed(
                 "trailing bytes after the projectile entity delta",
             ));
         }
 
+        for projectile in &projectile_delta.changed {
+            self.projectile_baseline.insert(projectile.id, *projectile);
+        }
+        for id in &projectile_delta.removed {
+            self.projectile_baseline.remove(id);
+        }
+        let mut projectiles: Vec<_> = self.projectile_baseline.values().copied().collect();
+        projectiles.sort_by_key(|p| p.id.0);
+        self.last_projectile_delta = projectile_delta;
         self.baseline = players.clone();
         Ok(Snapshot {
             tick: delta.tick,
@@ -280,6 +288,11 @@ fn encode_projectile(out: &mut WireWriter, projectile: &ProjectileState) {
             .unwrap_or(0),
     );
     out.put_u32(u32::from(projectile.grounded));
+    encode_missile_target(out, projectile.guide.target);
+    out.put_u8(projectile.guide.top.into());
+    out.put_u8(projectile.guide.stage);
+    out.put_u8(projectile.guide.passed.into());
+    encode_missile_target(out, projectile.attached_to);
 }
 
 fn encode_trajectory(out: &mut WireWriter, tr: &entity_iw4::Trajectory) {
@@ -329,6 +342,13 @@ fn decode_projectile(input: &mut WireReader<'_>) -> Result<ProjectileState, Wire
             (encoded != 0).then(|| encoded.saturating_sub(1))
         },
         grounded: input.get_u32()? != 0,
+        guide: sim::MissileGuide {
+            target: decode_missile_target(input)?,
+            top: input.get_u8()? != 0,
+            stage: input.get_u8()?,
+            passed: input.get_u8()? != 0,
+        },
+        attached_to: decode_missile_target(input)?,
     })
 }
 
@@ -368,22 +388,17 @@ fn encode_projectile_delta(
     ProjectileEntityDelta { changed, removed }
 }
 
-fn decode_projectile_delta(
-    input: &mut WireReader<'_>,
-    baseline: &mut HashMap<ProjectileId, ProjectileState>,
-) -> Result<ProjectileEntityDelta, WireError> {
+fn decode_projectile_delta(input: &mut WireReader<'_>) -> Result<ProjectileEntityDelta, WireError> {
     let changed_count = input.get_u16()? as usize;
     let mut changed = Vec::with_capacity(changed_count.min(256));
     for _ in 0..changed_count {
         let projectile = decode_projectile(input)?;
-        baseline.insert(projectile.id, projectile);
         changed.push(projectile);
     }
     let removed_count = input.get_u16()? as usize;
     let mut removed = Vec::with_capacity(removed_count.min(256));
     for _ in 0..removed_count {
         let id = ProjectileId(input.get_u32()?);
-        baseline.remove(&id);
         removed.push(id);
     }
     Ok(ProjectileEntityDelta { changed, removed })
@@ -404,6 +419,9 @@ pub(crate) fn encode_usercmd(out: &mut WireWriter, cmd: &UserCmd) {
     out.put_u8(cmd.melee_charge_dist);
     out.put_bytes(&cmd.selected_location);
     out.put_bytes(&cmd.remote_control);
+    for angle in cmd.gun_angle_offset {
+        out.put_f32(angle);
+    }
 }
 
 pub(crate) fn decode_usercmd(input: &mut WireReader<'_>) -> Result<UserCmd, WireError> {
@@ -424,7 +442,15 @@ pub(crate) fn decode_usercmd(input: &mut WireReader<'_>) -> Result<UserCmd, Wire
     input.get_bytes(&mut selected_location)?;
     let mut remote_control = [0u8; 2];
     input.get_bytes(&mut remote_control)?;
+    let mut gun_angle_offset = [0.0; 2];
+    for angle in &mut gun_angle_offset {
+        *angle = input.get_f32()?;
+        if !angle.is_finite() {
+            return Err(WireError::Malformed("non-finite gun aim"));
+        }
+    }
     Ok(UserCmd {
+        gun_angle_offset,
         server_time,
         buttons,
         angles,
@@ -438,4 +464,62 @@ pub(crate) fn decode_usercmd(input: &mut WireReader<'_>) -> Result<UserCmd, Wire
         selected_location,
         remote_control,
     })
+}
+
+pub(super) fn encode_missile_target(out: &mut WireWriter, target: Option<sim::MissileTarget>) {
+    let offset = match target {
+        None => {
+            out.put_u8(0);
+            return;
+        }
+        Some(sim::MissileTarget::Point(point)) => {
+            out.put_u8(1);
+            point
+        }
+        Some(sim::MissileTarget::Entity { entity, offset }) => {
+            out.put_u8(2);
+            out.put_i32(entity.number());
+            out.put_u32(entity.generation());
+            offset
+        }
+        Some(sim::MissileTarget::Player {
+            client,
+            life,
+            offset,
+        }) => {
+            out.put_u8(3);
+            out.put_u32(client.0);
+            out.put_u32(life.0);
+            offset
+        }
+    };
+    for value in offset {
+        out.put_f32(value);
+    }
+}
+
+pub(super) fn decode_missile_target(
+    input: &mut WireReader<'_>,
+) -> Result<Option<sim::MissileTarget>, WireError> {
+    let tag = input.get_u8()?;
+    let identity = match tag {
+        0 => return Ok(None),
+        1 => None,
+        2 | 3 => Some((input.get_u32()?, input.get_u32()?)),
+        _ => return Err(WireError::Malformed("bad missile target tag")),
+    };
+    let point = [input.get_f32()?, input.get_f32()?, input.get_f32()?];
+    Ok(Some(match identity {
+        None => sim::MissileTarget::Point(point),
+        Some((number, generation)) if tag == 2 => sim::MissileTarget::Entity {
+            entity: sim::EntityRef::from_parts(number as i32, generation)
+                .map_err(|_| WireError::Malformed("bad missile target entity"))?,
+            offset: point,
+        },
+        Some((client, life)) => sim::MissileTarget::Player {
+            client: sim::ClientId(client),
+            life: sim::LifeSequence(life),
+            offset: point,
+        },
+    }))
 }

@@ -306,16 +306,3 @@ pub(crate) fn always_array(
     s.fixup_slot(slot, body)?;
     Ok(Some(body))
 }
-
-#[allow(dead_code)]
-pub(crate) fn runtime_array(
-    s: &mut ZoneStream<'_>,
-    slot: Ptr,
-    align: usize,
-    bytes: usize,
-) -> Result<Option<Ptr>> {
-    s.push(crate::zone::XFILE_BLOCK_RUNTIME)?;
-    let body = always_array(s, slot, align, bytes)?;
-    s.pop()?;
-    Ok(body)
-}

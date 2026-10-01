@@ -17,7 +17,7 @@ pub(crate) use runtime::Runtime;
 
 pub use error::{Fault, Location};
 pub(crate) use host::controls::{
-    SCRIPT_LOCK, action_slot_command, command_buttons, player_commands, select_location,
+    action_slot_command, command_buttons, player_commands, select_location,
 };
 pub use host::entities::{
     KeyType, LevelData, StringTable, parse_entity_string, parse_radiant_keys,
@@ -32,7 +32,7 @@ pub(crate) use host::natives::iw4::set_dvar;
 pub(crate) use host::players::{
     answer_join, answer_menu, apply_disconnects, choose_class, choose_default_class,
     disconnect_player, flashbang, force_death, give_killstreak, is_t5, note_team_answer,
-    player_damage, script_seats, sync_players,
+    personal_class, player_damage, script_seats, sync_players,
 };
 pub(crate) use host::presence::sync_presence;
 pub use host::registry::{Native, NativeRegistry};
@@ -50,3 +50,8 @@ pub use source::{FileSources, SourceResolver, decode_source, normalize_module};
 pub(crate) use value::ArrayKey;
 pub use value::Value;
 pub(crate) use vm::state::{Frame, Thread, ThreadState, Waiter, WaiterKind};
+
+pub(crate) use host::entity_damage::{
+    destructible_attacker, destructible_callback, destructible_debris, destructible_effect,
+    set_destructible_model,
+};

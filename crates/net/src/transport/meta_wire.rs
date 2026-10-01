@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
 use playerstate_iw4::AnimPair;
@@ -43,7 +44,7 @@ impl WorldObjectSyncEncoder {
         out.put_u32(current.fracture_profile_version);
         let full = self.force_full || tick.0 % WORLD_SYNC_PERIOD_TICKS == 0;
         if full {
-            out.put_u8(2);
+            out.put_u8(4);
             encode_world_object_full(&mut out, &current);
             self.baseline = current;
             self.force_full = false;
@@ -57,7 +58,7 @@ impl WorldObjectSyncEncoder {
                 self.baseline.map_round_epoch = current.map_round_epoch;
                 self.baseline.fracture_profile_version = current.fracture_profile_version;
             } else {
-                out.put_u8(1);
+                out.put_u8(3);
                 encode_world_object_delta(&mut out, &self.baseline, &current);
                 self.baseline = current;
             }
@@ -205,6 +206,7 @@ fn encode_destructible_loop_sounds(out: &mut WireWriter, rows: &[DestructibleLoo
     out.put_u16(rows.len() as u16);
     for row in rows {
         out.put_u32(row.owner.to_wire());
+        out.put_u32(row.snd_ent.unwrap_or(u32::MAX));
         out.put_u8(row.alias_index);
         for v in row.origin {
             out.put_f32(v);
@@ -214,17 +216,28 @@ fn encode_destructible_loop_sounds(out: &mut WireWriter, rows: &[DestructibleLoo
 
 fn decode_destructible_loop_sounds(
     input: &mut WireReader<'_>,
+    with_entity: bool,
 ) -> Result<Vec<DestructibleLoopSound>, WireError> {
     let count = input.get_u16()? as usize;
     let mut rows = Vec::with_capacity(count.min(256));
     for _ in 0..count {
         let owner = ScriptModelId::from_wire(input.get_u32()?);
+        let snd_ent = if with_entity {
+            match input.get_u32()? {
+                u32::MAX => None,
+                number if number <= i32::MAX as u32 => Some(number),
+                _ => return Err(WireError::Malformed("invalid loop sound entity")),
+            }
+        } else {
+            None
+        };
         let alias_index = input.get_u8()?;
         let mut origin = [0.0; 3];
         for v in &mut origin {
             *v = input.get_f32()?;
         }
         rows.push(DestructibleLoopSound {
+            snd_ent,
             owner,
             alias_index,
             origin,
@@ -237,11 +250,22 @@ fn apply_pair_delta<K: Copy + Ord, V: Copy>(table: &mut Vec<(K, V)>, delta: &Pai
     for id in &delta.removed {
         table.retain(|(key, _)| key != id);
     }
-    for (id, value) in &delta.changed {
-        if let Some(row) = table.iter_mut().find(|(key, _)| key == id) {
-            row.1 = *value;
-        } else {
-            table.push((*id, *value));
+    table.sort_by_key(|(id, _)| *id);
+    // A full sync may repeat a key; a change lands on its first row.
+    let existing = table.len();
+    let mut added: BTreeMap<K, usize> = BTreeMap::new();
+    for &(id, value) in &delta.changed {
+        let index = table[..existing].partition_point(|(key, _)| *key < id);
+        if index < existing && table[index].0 == id {
+            table[index].1 = value;
+            continue;
+        }
+        match added.entry(id) {
+            Entry::Occupied(row) => table[*row.get()].1 = value,
+            Entry::Vacant(slot) => {
+                slot.insert(table.len());
+                table.push((id, value));
+            }
         }
     }
     table.sort_by_key(|(id, _)| *id);
@@ -254,9 +278,10 @@ fn decode_world_object_sync(
     state.as_of_ms = input.get_i32()?;
     state.map_round_epoch = input.get_u32()?;
     state.fracture_profile_version = input.get_u32()?;
-    match input.get_u8()? {
+    let tag = input.get_u8()?;
+    match tag {
         0 => {}
-        1 => {
+        1 | 3 => {
             let glass_changed = input.get_u16()? as usize;
             let mut glass = PairDelta::<u32, GlassPieceSnapshot>::default();
             for _ in 0..glass_changed {
@@ -268,18 +293,18 @@ fn decode_world_object_sync(
             for _ in 0..glass_removed {
                 glass.removed.push(input.get_u32()?);
             }
-            let destructible_loop_sounds = decode_destructible_loop_sounds(input)?;
+            let destructible_loop_sounds = decode_destructible_loop_sounds(input, tag >= 3)?;
 
             apply_pair_delta(&mut state.glass_pieces, &glass);
             state.destructible_loop_sounds = destructible_loop_sounds;
         }
-        2 => {
+        2 | 4 => {
             let glass_count = input.get_u16()? as usize;
             let mut glass_pieces = Vec::with_capacity(glass_count.min(4096));
             for _ in 0..glass_count {
                 glass_pieces.push((input.get_u32()?, decode_glass_piece_snapshot(input)?));
             }
-            let destructible_loop_sounds = decode_destructible_loop_sounds(input)?;
+            let destructible_loop_sounds = decode_destructible_loop_sounds(input, tag >= 3)?;
             *state = WorldObjectSnapshot {
                 as_of_ms: state.as_of_ms,
                 map_round_epoch: state.map_round_epoch,
@@ -383,11 +408,19 @@ pub(crate) fn encode_action(out: &mut WireWriter, action: &ClientAction) {
             request_id,
             class_id,
             revision,
+            loadout,
         } => {
             out.put_u8(1);
             out.put_u32(request_id);
             out.put_u32(class_id.0);
             out.put_u32(revision);
+            for weapon in loadout.weapons {
+                out.put_u32(weapon);
+            }
+            for perk in loadout.perks {
+                out.put_u32(perk);
+            }
+            out.put_u8(loadout.deathstreak);
         }
         ClientAction::GiveWeapon { request_id, weapon } => {
             out.put_u8(6);
@@ -492,6 +525,10 @@ pub(crate) fn encode_action(out: &mut WireWriter, action: &ClientAction) {
             out.put_bytes(&menu);
             out.put_bytes(&response);
         }
+        ClientAction::ResupplyAmmo { request_id } => {
+            out.put_u8(20);
+            out.put_u32(request_id);
+        }
         ClientAction::GiveKillstreak { request_id, name } => {
             out.put_u8(18);
             out.put_u32(request_id);
@@ -506,6 +543,16 @@ pub(crate) fn decode_action(input: &mut WireReader<'_>) -> Result<ClientAction, 
             request_id: input.get_u32()?,
             class_id: ClassId(input.get_u32()?),
             revision: input.get_u32()?,
+            loadout: sim::PersonalClass {
+                weapons: [
+                    input.get_u32()?,
+                    input.get_u32()?,
+                    input.get_u32()?,
+                    input.get_u32()?,
+                ],
+                perks: [input.get_u32()?, input.get_u32()?, input.get_u32()?],
+                deathstreak: input.get_u8()?,
+            },
         }),
         2 => Ok(ClientAction::JoinMatch {
             request_id: input.get_u32()?,
@@ -577,6 +624,9 @@ pub(crate) fn decode_action(input: &mut WireReader<'_>) -> Result<ClientAction, 
                 response,
             })
         }
+        20 => Ok(ClientAction::ResupplyAmmo {
+            request_id: input.get_u32()?,
+        }),
         18 => {
             let request_id = input.get_u32()?;
             let mut name = [0u8; sim::MENU_RESPONSE_BYTES];
@@ -1032,7 +1082,7 @@ fn decode_entity_event_record(input: &mut WireReader<'_>) -> Result<EntityEventR
     let audience = decode_audience(input)?;
     let event = entity_iw4::EntityEventKind(input.get_i32()?);
     if event == entity_iw4::EntityEventKind::NONE
-        || event.0 > entity_iw4::EntityEventKind::MANTLE.0
+        || event.0 > entity_iw4::EntityEventKind::STOP_RUMBLE.0
         || event.0 < 0
     {
         return Err(WireError::Malformed("entity event outside the event table"));
@@ -1178,7 +1228,6 @@ fn encode_client_meta(out: &mut WireWriter, meta: &ClientSnapshotMeta) {
     out.put_u8(meta.controls.jump_disabled.into());
     out.put_u8(meta.controls.usability_disabled.into());
     out.put_u8(meta.controls.linked.into());
-    out.put_u8(meta.controls.stunned.into());
     out.put_u32(meta.controls.switch_to);
     match meta.killcam_hud {
         None => out.put_u8(0),
@@ -1233,13 +1282,44 @@ fn encode_client_meta(out: &mut WireWriter, meta: &ClientSnapshotMeta) {
         out.put_u32(*weapon);
     }
     out.put_u8(meta.weapon_shot_count);
-    out.put_u8(u8::from(meta.burst_latch));
-    out.put_u8(u8::from(meta.rechamber_pending));
+    out.put_u8(u8::from(meta.burst_latch) | (u8::from(meta.burst_latch_secondary) << 1));
+    out.put_u8(
+        u8::from(meta.rechamber_pending) | (u8::from(meta.rechamber_pending_secondary) << 1),
+    );
     match meta.dead_since_tick {
         None => out.put_u8(0),
         Some(tick) => {
             out.put_u8(1);
             out.put_u32(tick);
+        }
+    }
+    out.put_u32(meta.shield.map_or(0, |shield| shield.weapon));
+    out.put_u8(u8::from(meta.shield.is_some_and(|shield| shield.on_back)));
+    let bones = meta
+        .shield_collision
+        .as_ref()
+        .map_or(&[][..], |collision| collision.bones.as_slice());
+    out.put_u16(
+        bones
+            .len()
+            .try_into()
+            .expect("shield collision bone count overflow"),
+    );
+    if let Some(collision) = meta.shield_collision.as_ref().filter(|_| !bones.is_empty()) {
+        for v in collision.normal {
+            out.put_f32(v);
+        }
+        for bone in bones {
+            out.put_u16(bone.bone);
+            out.put_u8(bone.part_classification);
+            for v in bone
+                .center
+                .into_iter()
+                .chain(bone.axes.into_iter().flatten())
+                .chain(bone.half_size)
+            {
+                out.put_f32(v);
+            }
         }
     }
     out.put_i32(meta.look_at_killer_yaw);
@@ -1270,6 +1350,15 @@ fn encode_client_meta(out: &mut WireWriter, meta: &ClientSnapshotMeta) {
     encode_vision(out, meta.view_effects.naked_vision.as_ref());
     encode_vision(out, meta.view_effects.thermal_vision.as_ref());
     encode_vision(out, meta.view_effects.missile_vision.as_ref());
+    encode_vision(out, meta.view_effects.night_vision.as_ref());
+    encode_vision(out, meta.view_effects.pain_vision.as_ref());
+    out.put_u8(u8::from(meta.view_effects.blur.is_some()));
+    if let Some(blur) = meta.view_effects.blur {
+        out.put_f32(blur.from);
+        out.put_f32(blur.to);
+        out.put_i32(blur.set_ms);
+        out.put_i32(blur.duration_ms);
+    }
     let dof = &meta.view_effects.depth_of_field;
     for v in [
         dof.near_start,
@@ -1307,14 +1396,20 @@ fn encode_client_meta(out: &mut WireWriter, meta: &ClientSnapshotMeta) {
     out.put_u32(lock.weapon);
     out.put_u32(lock.life);
     out.put_u8(lock.flags);
-    for value in lock.target.into_iter().chain(lock.point_sum) {
+    for value in lock.target {
         out.put_f32(value);
     }
-    out.put_u8(lock.point_count);
-    out.put_u8(lock.misses);
-    out.put_i32(lock.sampled_at);
-    out.put_i32(lock.out_of_ads_at);
+    super::delta::encode_missile_target(out, lock.aim);
     out.put_i32(lock.acquire_started_at);
+}
+
+fn decode_shield_vector(input: &mut WireReader<'_>) -> Result<[f32; 3], WireError> {
+    let vector = [input.get_f32()?, input.get_f32()?, input.get_f32()?];
+    if vector.iter().all(|value| value.is_finite()) {
+        Ok(vector)
+    } else {
+        Err(WireError::Malformed("nonfinite shield collision"))
+    }
 }
 
 fn decode_client_meta(input: &mut WireReader<'_>) -> Result<ClientSnapshotMeta, WireError> {
@@ -1326,7 +1421,6 @@ fn decode_client_meta(input: &mut WireReader<'_>) -> Result<ClientSnapshotMeta, 
         jump_disabled: input.get_u8()? != 0,
         usability_disabled: input.get_u8()? != 0,
         linked: input.get_u8()? != 0,
-        stunned: input.get_u8()? != 0,
         switch_to: input.get_u32()?,
     };
     let killcam_hud = match input.get_u8()? {
@@ -1387,12 +1481,63 @@ fn decode_client_meta(input: &mut WireReader<'_>) -> Result<ClientSnapshotMeta, 
         taped_mag_spent.push(input.get_u32()?);
     }
     let weapon_shot_count = input.get_u8()?;
-    let burst_latch = input.get_u8()? != 0;
-    let rechamber_pending = input.get_u8()? != 0;
+    let burst_latch_hands = input.get_u8()?;
+    let burst_latch = burst_latch_hands & 1 != 0;
+    let burst_latch_secondary = burst_latch_hands & 2 != 0;
+    let rechamber_pending_hands = input.get_u8()?;
+    let rechamber_pending = rechamber_pending_hands & 1 != 0;
+    let rechamber_pending_secondary = rechamber_pending_hands & 2 != 0;
     let dead_since_tick = match input.get_u8()? {
         0 => None,
         1 => Some(input.get_u32()?),
         _ => return Err(WireError::Malformed("bad dead_since_tick tag")),
+    };
+    let shield_weapon = input.get_u32()?;
+    let on_back = match input.get_u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(WireError::Malformed("bad shield attachment tag")),
+    };
+    let shield = (shield_weapon != 0).then_some(sim::ShieldAttachment {
+        weapon: shield_weapon,
+        on_back,
+    });
+    let shield_collision = {
+        let count = usize::from(input.get_u16()?);
+        if count > 256 || (count != 0 && shield.is_none()) {
+            return Err(WireError::Malformed("bad shield collision count"));
+        }
+        if count == 0 {
+            None
+        } else {
+            let normal = decode_shield_vector(input)?;
+            let mut bones = Vec::with_capacity(count);
+            for _ in 0..count {
+                let bone = input.get_u16()?;
+                let part_classification = input.get_u8()?;
+                if part_classification > 19 {
+                    return Err(WireError::Malformed("bad shield carrier hit location"));
+                }
+                let center = decode_shield_vector(input)?;
+                let axes = [
+                    decode_shield_vector(input)?,
+                    decode_shield_vector(input)?,
+                    decode_shield_vector(input)?,
+                ];
+                let half_size = decode_shield_vector(input)?;
+                if half_size.iter().any(|v| *v < 0.0) {
+                    return Err(WireError::Malformed("negative shield collision size"));
+                }
+                bones.push(xmodel_runtime::CollisionBone {
+                    bone,
+                    part_classification,
+                    center,
+                    axes,
+                    half_size,
+                });
+            }
+            Some(sim::ShieldCarrierCollision { normal, bones })
+        }
     };
     let look_at_killer_yaw = input.get_i32()?;
     let mut name = [0u8; 16];
@@ -1419,6 +1564,18 @@ fn decode_client_meta(input: &mut WireReader<'_>) -> Result<ClientSnapshotMeta, 
         naked_vision: decode_vision(input)?,
         thermal_vision: decode_vision(input)?,
         missile_vision: decode_vision(input)?,
+        night_vision: decode_vision(input)?,
+        pain_vision: decode_vision(input)?,
+        blur: match input.get_u8()? {
+            0 => None,
+            1 => Some(sim::ScriptBlur {
+                from: input.get_f32()?,
+                to: input.get_f32()?,
+                set_ms: input.get_i32()?,
+                duration_ms: input.get_i32()?,
+            }),
+            _ => return Err(WireError::Malformed("bad blur tag")),
+        },
         depth_of_field: sim::ScriptDepthOfField {
             near_start: input.get_f32()?,
             near_end: input.get_f32()?,
@@ -1453,11 +1610,7 @@ fn decode_client_meta(input: &mut WireReader<'_>) -> Result<ClientSnapshotMeta, 
         life: input.get_u32()?,
         flags: input.get_u8()?,
         target: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
-        point_sum: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
-        point_count: input.get_u8()?,
-        misses: input.get_u8()?,
-        sampled_at: input.get_i32()?,
-        out_of_ads_at: input.get_i32()?,
+        aim: super::delta::decode_missile_target(input)?,
         acquire_started_at: input.get_i32()?,
     };
     Ok(ClientSnapshotMeta {
@@ -1481,8 +1634,12 @@ fn decode_client_meta(input: &mut WireReader<'_>) -> Result<ClientSnapshotMeta, 
         taped_mag_spent,
         weapon_shot_count,
         burst_latch,
+        burst_latch_secondary,
         rechamber_pending,
+        rechamber_pending_secondary,
         dead_since_tick,
+        shield,
+        shield_collision,
         look_at_killer_yaw,
         name,
         hud_archival,
@@ -1530,7 +1687,7 @@ fn encode_shock(out: &mut WireWriter, shock: Option<&hud_iw4::ShockParams>) {
         out.put_u8(0);
         return;
     };
-    out.put_u8(1);
+    out.put_u8(2);
     out.put_i32(shock.screen_type);
     out.put_i32(shock.white_fade_ms);
     out.put_i32(shock.shot_fade_ms);
@@ -1544,13 +1701,28 @@ fn encode_shock(out: &mut WireWriter, shock: Option<&hud_iw4::ShockParams>) {
     put_text(out, &shock.sound.end_alias);
     put_text(out, &shock.sound.abort_alias);
     out.put_u8(u8::from(shock.movement));
+    match &shock.sound.channel_volumes {
+        None => out.put_u8(0),
+        Some(volumes) => {
+            out.put_u8(1);
+            out.put_u8(volumes.len() as u8);
+            for (name, gain) in volumes {
+                put_text(out, name);
+                out.put_f32(*gain);
+            }
+        }
+    }
 }
 
 fn decode_shock(input: &mut WireReader<'_>) -> Result<Option<hud_iw4::ShockParams>, WireError> {
-    if input.get_u8()? == 0 {
+    let tag = input.get_u8()?;
+    if tag == 0 {
         return Ok(None);
     }
-    Ok(Some(hud_iw4::ShockParams {
+    if tag != 1 && tag != 2 {
+        return Err(WireError::Malformed("bad shellshock tag"));
+    }
+    let mut shock = hud_iw4::ShockParams {
         screen_type: input.get_i32()?,
         white_fade_ms: input.get_i32()?,
         shot_fade_ms: input.get_i32()?,
@@ -1562,13 +1734,42 @@ fn decode_shock(input: &mut WireReader<'_>) -> Result<Option<hud_iw4::ShockParam
             max_yaw_speed: input.get_f32()?,
         },
         sound: hud_iw4::ShellshockSoundParms {
+            channel_volumes: None,
             affect: input.get_u8()? != 0,
             loop_alias: get_text(input)?,
             end_alias: get_text(input)?,
             abort_alias: get_text(input)?,
         },
         movement: input.get_u8()? != 0,
-    }))
+    };
+    if tag == 2 {
+        match input.get_u8()? {
+            0 => {}
+            1 => {
+                let count = input.get_u8()?;
+                if count > 64 {
+                    return Err(WireError::Malformed("too many shellshock channel volumes"));
+                }
+                let mut volumes = std::collections::BTreeMap::new();
+                for _ in 0..count {
+                    let name = get_text(input)?;
+                    let gain = input.get_f32()?;
+                    if name.is_empty()
+                        || name.len() > 64
+                        || name != name.to_ascii_lowercase()
+                        || !gain.is_finite()
+                        || !(0.0..=1.0).contains(&gain)
+                        || volumes.insert(name, gain).is_some()
+                    {
+                        return Err(WireError::Malformed("invalid shellshock channel volume"));
+                    }
+                }
+                shock.sound.channel_volumes = Some(volumes);
+            }
+            _ => return Err(WireError::Malformed("bad shellshock channel volumes tag")),
+        }
+    }
+    Ok(Some(shock))
 }
 fn encode_hud_bank(out: &mut WireWriter, bank: &[hud_iw4::HudElem]) {
     let n = bank.len().min(hud_iw4::HUDELEM_BANK_CAPACITY);
@@ -2753,6 +2954,111 @@ fn get_optional_text(input: &mut WireReader<'_>) -> Result<Option<String>, WireE
     }
 }
 
+fn encode_fog_params(out: &mut WireWriter, fog: sim::ScriptFogParams) {
+    out.put_f32(fog.start_dist);
+    out.put_f32(fog.halfway_dist);
+    for value in fog.color_rgb {
+        out.put_f32(value);
+    }
+    out.put_f32(fog.max_opacity);
+    out.put_u8(u8::from(fog.sun.is_some()));
+    if let Some(sun) = fog.sun {
+        for value in sun.color_rgb.into_iter().chain(sun.sun_dir) {
+            out.put_f32(value);
+        }
+        out.put_f32(sun.begin_angle_deg);
+        out.put_f32(sun.end_angle_deg);
+        out.put_f32(sun.scale);
+    }
+}
+
+fn decode_fog_params(input: &mut WireReader<'_>) -> Result<sim::ScriptFogParams, WireError> {
+    let fog = sim::ScriptFogParams {
+        start_dist: input.get_f32()?,
+        halfway_dist: input.get_f32()?,
+        color_rgb: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
+        max_opacity: input.get_f32()?,
+        sun: match input.get_u8()? {
+            0 => None,
+            1 => Some(sim::ScriptSunFog {
+                color_rgb: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
+                sun_dir: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
+                begin_angle_deg: input.get_f32()?,
+                end_angle_deg: input.get_f32()?,
+                scale: input.get_f32()?,
+            }),
+            _ => return Err(WireError::Malformed("invalid fog sun tag")),
+        },
+    };
+    if !fog.valid() {
+        return Err(WireError::Malformed("invalid fog parameters"));
+    }
+    Ok(fog)
+}
+
+fn encode_scene_effects(out: &mut WireWriter, state: &sim::ObjectiveMatch) {
+    out.put_u8(u8::from(state.fog.is_some()));
+    if let Some(fog) = state.fog {
+        encode_fog_params(out, fog.from);
+        encode_fog_params(out, fog.to);
+        out.put_i32(fog.start_ms);
+        out.put_i32(fog.duration_ms);
+    }
+    debug_assert!(state.earthquakes.len() <= sim::MAX_SCRIPT_EARTHQUAKES);
+    out.put_u8(state.earthquakes.len() as u8);
+    for quake in &state.earthquakes {
+        out.put_u32(quake.id);
+        for value in quake.origin {
+            out.put_f32(value);
+        }
+        out.put_f32(quake.scale);
+        out.put_f32(quake.radius);
+        out.put_i32(quake.start_ms);
+        out.put_i32(quake.duration_ms);
+    }
+}
+
+fn decode_scene_effects(
+    input: &mut WireReader<'_>,
+    state: &mut sim::ObjectiveMatch,
+) -> Result<(), WireError> {
+    state.fog = match input.get_u8()? {
+        0 => None,
+        1 => {
+            let fog = sim::ScriptFog {
+                from: decode_fog_params(input)?,
+                to: decode_fog_params(input)?,
+                start_ms: input.get_i32()?,
+                duration_ms: input.get_i32()?,
+            };
+            if fog.duration_ms < 0 {
+                return Err(WireError::Malformed("negative fog duration"));
+            }
+            Some(fog)
+        }
+        _ => return Err(WireError::Malformed("invalid fog tag")),
+    };
+    let count = input.get_u8()? as usize;
+    if count > sim::MAX_SCRIPT_EARTHQUAKES {
+        return Err(WireError::Malformed("too many earthquakes"));
+    }
+    for _ in 0..count {
+        let quake = sim::ScriptEarthquake {
+            id: input.get_u32()?,
+            origin: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
+            scale: input.get_f32()?,
+            radius: input.get_f32()?,
+            start_ms: input.get_i32()?,
+            duration_ms: input.get_i32()?,
+        };
+        if !quake.valid() {
+            return Err(WireError::Malformed("invalid earthquake"));
+        }
+        state.earthquakes.push(quake);
+    }
+    Ok(())
+}
+
 fn encode_objectives(out: &mut WireWriter, state: &sim::ObjectiveMatch) {
     for score in state.scores {
         out.put_i32(score);
@@ -2792,6 +3098,9 @@ fn encode_objectives(out: &mut WireWriter, state: &sim::ObjectiveMatch) {
     encode_vision(out, state.naked_vision.as_ref());
     encode_vision(out, state.thermal_vision.as_ref());
     encode_vision(out, state.missile_vision.as_ref());
+    encode_vision(out, state.night_vision.as_ref());
+    encode_vision(out, state.pain_vision.as_ref());
+    encode_scene_effects(out, state);
     out.put_u16(state.vehicles.len() as u16);
     for vehicle in &state.vehicles {
         for v in vehicle.origin {
@@ -2806,6 +3115,26 @@ fn encode_objectives(out: &mut WireWriter, state: &sim::ObjectiveMatch) {
         for size in vehicle.size {
             out.put_i32(size);
         }
+    }
+    out.put_u8(u8::from(state.slow_motion.is_some()));
+    if let Some(plan) = state.slow_motion {
+        out.put_f32(plan.from);
+        out.put_f32(plan.to);
+        out.put_i32(plan.start_ms);
+        out.put_i32(plan.duration_ms);
+    }
+    for plan in [&state.ambient, &state.ac130_ambient] {
+        out.put_u8(u8::from(plan.is_some()));
+        if let Some(plan) = plan {
+            put_optional_text(out, plan.alias.as_deref());
+            out.put_i32(plan.start_ms);
+            out.put_i32(plan.end_ms);
+        }
+    }
+    out.put_u32(state.rumble_aliases.len() as u32);
+    for (index, name) in &state.rumble_aliases {
+        out.put_i32(*index);
+        put_text(out, name);
     }
 }
 
@@ -2861,6 +3190,9 @@ fn decode_objectives(input: &mut WireReader<'_>) -> Result<sim::ObjectiveMatch, 
     state.naked_vision = decode_vision(input)?;
     state.thermal_vision = decode_vision(input)?;
     state.missile_vision = decode_vision(input)?;
+    state.night_vision = decode_vision(input)?;
+    state.pain_vision = decode_vision(input)?;
+    decode_scene_effects(input, &mut state)?;
     for _ in 0..input.get_u16()? {
         state.vehicles.push(sim::CompassVehicle {
             origin: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
@@ -2870,6 +3202,55 @@ fn decode_objectives(input: &mut WireReader<'_>) -> Result<sim::ObjectiveMatch, 
             icons: [get_text(input)?, get_text(input)?],
             size: [input.get_i32()?, input.get_i32()?],
         });
+    }
+    state.slow_motion = match input.get_u8()? {
+        0 => None,
+        1 => {
+            let plan = sim::ScriptSlowMotion {
+                from: input.get_f32()?,
+                to: input.get_f32()?,
+                start_ms: input.get_i32()?,
+                duration_ms: input.get_i32()?,
+            };
+            if !plan.valid() {
+                return Err(WireError::Malformed("invalid slow-motion transition"));
+            }
+            Some(plan)
+        }
+        _ => return Err(WireError::Malformed("invalid slow-motion tag")),
+    };
+    for plan in [&mut state.ambient, &mut state.ac130_ambient] {
+        *plan = match input.get_u8()? {
+            0 => None,
+            1 => {
+                let plan = sim::ScriptAmbient {
+                    alias: get_optional_text(input)?,
+                    start_ms: input.get_i32()?,
+                    end_ms: input.get_i32()?,
+                };
+                if !plan.valid() {
+                    return Err(WireError::Malformed("invalid ambient transition"));
+                }
+                Some(plan)
+            }
+            _ => return Err(WireError::Malformed("invalid ambient tag")),
+        };
+    }
+    let count = input.get_u32()? as usize;
+    if count > 255 {
+        return Err(WireError::Malformed("too many rumble aliases"));
+    }
+    for _ in 0..count {
+        let index = input.get_i32()?;
+        let name = get_text(input)?;
+        if !(1..=255).contains(&index)
+            || name.is_empty()
+            || name.len() > 1023
+            || state.rumble_aliases.iter().any(|(old, _)| *old == index)
+        {
+            return Err(WireError::Malformed("invalid rumble alias"));
+        }
+        state.rumble_aliases.push((index, name));
     }
     Ok(state)
 }

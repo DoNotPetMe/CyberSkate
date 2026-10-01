@@ -1,12 +1,7 @@
-//! The controller: its sticks as movement and turn rates, and its buttons
-//! as menu keys while a menu is up. Its gameplay buttons go through the
-//! bind table with the keyboard's.
-use bevy::input::ButtonInput;
-use bevy::input::gamepad::{Gamepad, GamepadButton};
-use bevy::input::keyboard::KeyCode;
+use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton, GamepadConnection, GamepadEvent};
 use bevy::prelude::*;
+use frame::{UiMenuKey, UiMenuRequest};
 
-/// The sticks after their deadzones, as the stick layout assigns them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Sticks {
     /// Forward and right.
@@ -15,8 +10,6 @@ pub(crate) struct Sticks {
     pub look: Vec2,
 }
 
-/// A stick with its centre `deadzone` cut out and the rest rescaled to
-/// 0..1, keeping its direction.
 fn radial(stick: Vec2, deadzone: f32) -> Vec2 {
     let length = stick.length();
     if length <= deadzone || length <= f32::EPSILON {
@@ -30,17 +23,25 @@ pub(crate) fn sticks(pad: &Gamepad, settings: &frame::GameSettings) -> Sticks {
     let left = radial(pad.left_stick(), settings.pad_deadzone_left);
     let right = radial(pad.right_stick(), settings.pad_deadzone_right);
     match settings.pad_stick_layout {
-        // Southpaw: the sticks swap.
-        1 => Sticks { movement: Vec2::new(right.y, right.x), look: left },
-        // Legacy: the left stick moves forward and turns, the right looks
-        // up and down and strafes.
-        2 => Sticks { movement: Vec2::new(left.y, right.x), look: Vec2::new(left.x, right.y) },
-        3 => Sticks { movement: Vec2::new(right.y, left.x), look: Vec2::new(right.x, left.y) },
-        _ => Sticks { movement: Vec2::new(left.y, left.x), look: right },
+        1 => Sticks {
+            movement: Vec2::new(right.y, right.x),
+            look: left,
+        },
+        2 => Sticks {
+            movement: Vec2::new(left.y, right.x),
+            look: Vec2::new(left.x, right.y),
+        },
+        3 => Sticks {
+            movement: Vec2::new(right.y, left.x),
+            look: Vec2::new(right.x, left.y),
+        },
+        _ => Sticks {
+            movement: Vec2::new(left.y, left.x),
+            look: right,
+        },
     }
 }
 
-/// The response to a look stick's deflection, 0..1.
 fn curve(deflection: f32, kind: u8) -> f32 {
     let d = deflection.clamp(0.0, 1.0);
     match kind {
@@ -50,142 +51,203 @@ fn curve(deflection: f32, kind: u8) -> f32 {
     }
 }
 
-/// The look stick through its response curve, right and up, with the look
-/// inversion applied to up.
 pub(crate) fn shaped_look(look: Vec2, settings: &frame::GameSettings) -> Vec2 {
     let deflection = look.length();
     if deflection <= f32::EPSILON {
         return Vec2::ZERO;
     }
     let shaped = look / deflection * curve(deflection, settings.pad_curve);
-    Vec2::new(shaped.x, if settings.pad_invert { -shaped.y } else { shaped.y })
+    Vec2::new(
+        shaped.x,
+        if settings.pad_invert {
+            -shaped.y
+        } else {
+            shaped.y
+        },
+    )
 }
 
-/// Follows the controller in use: the last one with a button pressed or a
-/// stick pushed well off centre. Connections are logged with their names.
+#[derive(Default)]
+pub(crate) struct PadActivity {
+    axes: std::collections::HashMap<(Entity, GamepadAxis), f32>,
+    buttons: std::collections::HashMap<(Entity, GamepadButton), f32>,
+}
+
 pub(crate) fn track_active_pad(
     gamepads: Query<(Entity, &Gamepad, Option<&Name>)>,
-    mut connections: MessageReader<bevy::input::gamepad::GamepadConnectionEvent>,
+    mut events: MessageReader<GamepadEvent>,
     mut active: ResMut<frame::ActivePad>,
+    mut devices: ResMut<frame::InputDevices>,
+    settings: Res<frame::GameSettings>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut activity: Local<PadActivity>,
 ) {
-    for event in connections.read() {
-        match &event.connection {
-            bevy::input::gamepad::GamepadConnection::Connected { name, .. } => {
-                diag::info!(Ui, "controller connected: {name}");
-            }
-            bevy::input::gamepad::GamepadConnection::Disconnected => {
-                diag::info!(Ui, "controller disconnected");
-            }
-        }
-    }
+    devices.focused = windows.single().map_or(true, |window| window.focused);
     if active.0.is_some_and(|entity| gamepads.get(entity).is_err()) {
         active.0 = None;
     }
-    for (entity, pad, name) in &gamepads {
-        let moved = pad.left_stick().length() > 0.5 || pad.right_stick().length() > 0.5;
-        if (pad.get_just_pressed().next().is_some() || moved) && active.0 != Some(entity) {
-            diag::info!(Ui, "controller in use: {}", name.map_or("unnamed", |n| n.as_str()));
+    let PadActivity { axes, buttons } = &mut *activity;
+    axes.retain(|(entity, _), _| gamepads.contains(*entity));
+    buttons.retain(|(entity, _), _| gamepads.contains(*entity));
+    let mut connected = std::collections::HashSet::new();
+    for event in events.read() {
+        let activity = match event {
+            GamepadEvent::Connection(event) => {
+                if matches!(event.connection, GamepadConnection::Connected { .. }) {
+                    connected.insert(event.gamepad);
+                }
+                if matches!(event.connection, GamepadConnection::Disconnected) {
+                    axes.retain(|(entity, _), _| *entity != event.gamepad);
+                    buttons.retain(|(entity, _), _| *entity != event.gamepad);
+                    if active.0 == Some(event.gamepad) {
+                        active.0 = None;
+                    }
+                }
+                if matches!(event.connection, GamepadConnection::Connected { .. })
+                    && let Ok((_, pad, _)) = gamepads.get(event.gamepad)
+                {
+                    for axis in [
+                        GamepadAxis::LeftStickX,
+                        GamepadAxis::LeftStickY,
+                        GamepadAxis::RightStickX,
+                        GamepadAxis::RightStickY,
+                    ] {
+                        axes.insert((event.gamepad, axis), pad.get(axis).unwrap_or(0.0));
+                    }
+                }
+                None
+            }
+            GamepadEvent::Button(event) => {
+                let previous = buttons
+                    .insert((event.entity, event.button), event.value)
+                    .unwrap_or(0.0);
+                (event.value >= 0.55 && previous < 0.55).then_some(event.entity)
+            }
+            GamepadEvent::Axis(event) => {
+                let previous = axes.entry((event.entity, event.axis)).or_insert(0.0);
+                let deadzone = match event.axis {
+                    GamepadAxis::LeftStickX | GamepadAxis::LeftStickY => settings.pad_deadzone_left,
+                    _ => settings.pad_deadzone_right,
+                }
+                .max(0.15);
+                let meaningful =
+                    event.value.abs() > deadzone + 0.08 && (event.value - *previous).abs() > 0.12;
+                if meaningful || event.value.abs() < deadzone {
+                    *previous = event.value;
+                }
+                meaningful.then_some(event.entity)
+            }
+        };
+        if let Some(entity) = activity.filter(|entity| {
+            devices.focused && !connected.contains(entity) && gamepads.contains(*entity)
+        }) {
             active.0 = Some(entity);
+            devices.pad_prompts = true;
         }
     }
+    if active.0.is_none() {
+        devices.pad_prompts = false;
+    }
+    devices.style = match settings.pad_prompts {
+        1 => frame::PromptStyle::Xbox,
+        2 => frame::PromptStyle::PlayStation,
+        3 => frame::PromptStyle::Generic,
+        _ => active
+            .0
+            .and_then(|entity| gamepads.get(entity).ok())
+            .map_or(frame::PromptStyle::Generic, |(_, pad, name)| {
+                let name = name.map_or("", |name| name.as_str()).to_ascii_lowercase();
+                if pad.vendor_id() == Some(0x054c)
+                    || name.contains("dualshock")
+                    || name.contains("dualsense")
+                    || name == "wireless controller"
+                {
+                    frame::PromptStyle::PlayStation
+                } else if pad.vendor_id() == Some(0x045e)
+                    || name.contains("xbox")
+                    || name.contains("xinput")
+                {
+                    frame::PromptStyle::Xbox
+                } else {
+                    frame::PromptStyle::Generic
+                }
+            }),
+    };
 }
 
-/// Menu directions repeat while held: after the first press, then this
-/// often.
 const REPEAT_DELAY: f32 = 0.4;
 const REPEAT_EVERY: f32 = 0.12;
 
-#[derive(Default)]
-pub(crate) struct PadMenuKeys {
-    /// Keys held on the controller's behalf.
-    held: Vec<KeyCode>,
-    /// A direction pulsed last frame, released now.
-    pulsed: Option<KeyCode>,
-    /// The direction held and when it next repeats.
-    direction: Option<(KeyCode, f32)>,
-}
-
-/// While a menu is up the controller drives it as the keyboard does: the
-/// D-pad or left stick moves, A accepts, B backs out. Start opens and
-/// closes the menu anywhere.
 pub(crate) fn drive_menus_with_pad(
     gamepads: Query<&Gamepad>,
     active: Res<frame::ActivePad>,
     script_menus: Option<Res<hud::ScriptMenus>>,
-    capture: Res<frame::UiBindingCapture>,
+    (devices, console, capture): (
+        Res<frame::InputDevices>,
+        Res<crate::ConsoleState>,
+        Res<frame::UiBindingCapture>,
+    ),
     time: Res<Time>,
-    mut keys: ResMut<ButtonInput<KeyCode>>,
-    mut state: Local<PadMenuKeys>,
+    mut requests: MessageWriter<UiMenuRequest>,
+    mut repeat: Local<Option<(UiMenuKey, f32)>>,
 ) {
-    if let Some(key) = state.pulsed.take() {
-        keys.release(key);
+    if !devices.focused || console.open {
+        *repeat = None;
+        return;
     }
-    let pad = active.0.and_then(|entity| gamepads.get(entity).ok());
-    // A binding being listened for takes the controller's buttons itself.
-    let capturing = capture.command.is_some();
-    let menu_open = script_menus.is_some_and(|menus| menus.captures_input());
-    let mut wanted: Vec<KeyCode> = Vec::new();
-    if let Some(pad) = pad.filter(|_| !capturing) {
-        if pad.pressed(GamepadButton::Start) {
-            wanted.push(KeyCode::Escape);
-        }
-        if menu_open {
-            if pad.pressed(GamepadButton::South) {
-                wanted.push(KeyCode::Enter);
+    let pad = active
+        .0
+        .and_then(|entity| gamepads.get(entity).ok())
+        .filter(|_| capture.command.is_none());
+    let Some(pad) = pad else {
+        *repeat = None;
+        return;
+    };
+    if pad.just_pressed(GamepadButton::Start) {
+        requests.write(UiMenuRequest::Key(UiMenuKey::Escape));
+        *repeat = None;
+        return;
+    }
+    if !script_menus.is_some_and(|menus| menus.captures_input()) {
+        *repeat = None;
+        return;
+    }
+    if pad.just_pressed(GamepadButton::South) {
+        requests.write(UiMenuRequest::Key(UiMenuKey::Enter));
+    }
+    if pad.just_pressed(GamepadButton::East) {
+        requests.write(UiMenuRequest::Key(UiMenuKey::Escape));
+    }
+    let stick = pad.left_stick();
+    let direction = if pad.pressed(GamepadButton::DPadUp) || stick.y > 0.6 {
+        Some(UiMenuKey::Up)
+    } else if pad.pressed(GamepadButton::DPadDown) || stick.y < -0.6 {
+        Some(UiMenuKey::Down)
+    } else if pad.pressed(GamepadButton::DPadLeft) || stick.x < -0.6 {
+        Some(UiMenuKey::Left)
+    } else if pad.pressed(GamepadButton::DPadRight) || stick.x > 0.6 {
+        Some(UiMenuKey::Right)
+    } else {
+        None
+    };
+    let now = time.elapsed_secs();
+    let fire = match (direction, *repeat) {
+        (Some(key), Some((held, next))) if key == held => {
+            if now >= next {
+                *repeat = Some((key, now + REPEAT_EVERY));
             }
-            if pad.pressed(GamepadButton::East) {
-                wanted.push(KeyCode::Escape);
-            }
-            let stick = pad.left_stick();
-            let direction = if pad.pressed(GamepadButton::DPadUp) || stick.y > 0.6 {
-                Some(KeyCode::ArrowUp)
-            } else if pad.pressed(GamepadButton::DPadDown) || stick.y < -0.6 {
-                Some(KeyCode::ArrowDown)
-            } else if pad.pressed(GamepadButton::DPadLeft) || stick.x < -0.6 {
-                Some(KeyCode::ArrowLeft)
-            } else if pad.pressed(GamepadButton::DPadRight) || stick.x > 0.6 {
-                Some(KeyCode::ArrowRight)
-            } else {
-                None
-            };
-            let now = time.elapsed_secs();
-            let fire = match (direction, state.direction) {
-                (Some(key), Some((held, next))) if key == held => {
-                    if now >= next {
-                        state.direction = Some((key, now + REPEAT_EVERY));
-                        true
-                    } else {
-                        false
-                    }
-                }
-                (Some(key), _) => {
-                    state.direction = Some((key, now + REPEAT_DELAY));
-                    true
-                }
-                (None, _) => {
-                    state.direction = None;
-                    false
-                }
-            };
-            if fire && let Some(key) = direction {
-                keys.press(key);
-                state.pulsed = Some(key);
-            }
-        } else {
-            state.direction = None;
+            now >= next
         }
-    }
-    wanted.dedup();
-    let held = std::mem::take(&mut state.held);
-    for key in &held {
-        if !wanted.contains(key) {
-            keys.release(*key);
+        (Some(key), _) => {
+            *repeat = Some((key, now + REPEAT_DELAY));
+            true
         }
-    }
-    for key in &wanted {
-        if !held.contains(key) {
-            keys.press(*key);
+        (None, _) => {
+            *repeat = None;
+            false
         }
+    };
+    if fire && let Some(key) = direction {
+        requests.write(UiMenuRequest::Key(key));
     }
-    state.held = wanted;
 }

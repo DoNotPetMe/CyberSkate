@@ -23,15 +23,17 @@ mod snapshot_meta;
 
 pub use client_view::{
     KillcamHud, LocationSelection, MENU_COMMAND_TAIL, MenuCommand, MenuCommandKind, RadarMode,
-    RemoteMissile, ScriptDepthOfField, ScriptSeat, ViewEffects, VisionChange,
+    RemoteMissile, ScriptBlur, ScriptDepthOfField, ScriptSeat, ViewEffects, VisionChange,
+    is_postfx_dvar,
 };
 pub use events::{
     EntityEventPayload, EntityEventRecord, EventAudience, EventRecord, PelletFxRecord,
     SIM_EVENT_ROSTER, SimEvent, SimEventRow, UNRELIABLE_SIM_EVENT_COUNT, sim_event_is_reliable,
 };
 pub use loadout::{
-    CLASS_CATALOG_PERKS, ClassDef, ClassRejectReason, ConfigurationChangeRejectReason,
-    GiveRejectReason, LoadoutSpec,
+    CLASS_CATALOG_DEATHSTREAKS, CLASS_CATALOG_PERKS, ClassDef, ClassRejectReason,
+    ConfigurationChangeRejectReason, GiveRejectReason, LoadoutSpec, PERSONAL_CLASS_SLOTS,
+    PersonalClass,
 };
 pub fn class_catalog_perk_name(id: u32) -> Option<&'static str> {
     CLASS_CATALOG_PERKS
@@ -81,6 +83,7 @@ impl InputReceipt {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClientMatchState {
+    pub shield: Option<crate::ShieldAttachment>,
     pub weapon_lock: crate::WeaponLock,
     pub lifecycle: ClientLifecycle,
     pub input_receipt: InputReceipt,
@@ -100,8 +103,10 @@ pub struct ClientMatchState {
 
     pub(crate) weapon_shot_count: u8,
     pub(crate) burst_latch: bool,
+    pub(crate) burst_latch_secondary: bool,
 
     pub(crate) rechamber_pending: bool,
+    pub(crate) rechamber_pending_secondary: bool,
 
     pub(crate) dead_since_tick: Option<u32>,
 
@@ -147,7 +152,6 @@ pub struct ScriptControls {
     pub jump_disabled: bool,
     pub usability_disabled: bool,
     pub linked: bool,
-    pub stunned: bool,
     pub switch_to: u32,
 }
 
@@ -202,6 +206,8 @@ impl ClientMatchState {
 
     pub(crate) fn to_snapshot_meta(&self) -> ClientSnapshotMeta {
         ClientSnapshotMeta {
+            shield: self.shield,
+            shield_collision: None,
             controls: self.controls,
             weapon_lock: self.weapon_lock,
             killcam_hud: None,
@@ -222,7 +228,9 @@ impl ClientMatchState {
             taped_mag_spent: self.taped_mag_spent.clone(),
             weapon_shot_count: self.weapon_shot_count,
             burst_latch: self.burst_latch,
+            burst_latch_secondary: self.burst_latch_secondary,
             rechamber_pending: self.rechamber_pending,
+            rechamber_pending_secondary: self.rechamber_pending_secondary,
             dead_since_tick: self.dead_since_tick,
             look_at_killer_yaw: self.look_at_killer_yaw,
             name: self.name,
@@ -255,6 +263,7 @@ impl ClientMatchState {
 
     pub(crate) fn adopt_snapshot_meta(&mut self, meta: &ClientSnapshotMeta) {
         self.controls = meta.controls;
+        self.shield = meta.shield;
         self.weapon_lock = meta.weapon_lock;
         self.lifecycle = meta.lifecycle;
         self.loadout = meta.loadout.clone();
@@ -273,7 +282,9 @@ impl ClientMatchState {
         self.taped_mag_spent = meta.taped_mag_spent.clone();
         self.weapon_shot_count = meta.weapon_shot_count;
         self.burst_latch = meta.burst_latch;
+        self.burst_latch_secondary = meta.burst_latch_secondary;
         self.rechamber_pending = meta.rechamber_pending;
+        self.rechamber_pending_secondary = meta.rechamber_pending_secondary;
         self.dead_since_tick = meta.dead_since_tick;
         self.look_at_killer_yaw = meta.look_at_killer_yaw;
         self.name = meta.name;

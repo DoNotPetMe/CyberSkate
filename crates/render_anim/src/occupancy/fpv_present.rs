@@ -83,6 +83,11 @@ pub struct SessionFpvMeshesHandles {
 
 fn same_compositions(a: &asset_game::FpvSideAssemblies, b: &asset_game::FpvSideAssemblies) -> bool {
     Arc::ptr_eq(&a.bare, &b.bare)
+        && match (&a.melee, &b.melee) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
         && match (&a.rocket, &b.rocket) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
@@ -618,9 +623,8 @@ pub fn tick_fpv_viewmodel(
         Some(snap) => {
             let ps = presented.player(local.0);
             let ws = ps.map(|p| p.weaponstate_primary).unwrap_or(0);
-            const PMF_SPRINTING: u32 = 0x4000;
             let sprinting = ps
-                .map(|p| (p.pm_flags & PMF_SPRINTING) != 0)
+                .map(|p| (p.pm_flags & playerstate_iw4::pm_flags::SPRINTING) != 0)
                 .unwrap_or(false);
             let ads_frac = ps.map(|p| p.f_weapon_pos_frac).unwrap_or(0.0);
             let weap_anim = ps.map(|p| p.weap_anim).unwrap_or(0);
@@ -661,7 +665,18 @@ pub fn tick_fpv_viewmodel(
                     ads_frac,
                     weap_anim,
                     weap_anim_secondary: ps.map(|p| p.weap_anim_secondary).unwrap_or(0),
-                    last_weapon_hand: ps.map(|p| p.last_weapon_hand).unwrap_or(0),
+                    last_weapon_hand: ps
+                        .map(|p| {
+                            if table
+                                .and_then(|t| t.facts_of(session.weapon_id))
+                                .is_some_and(|f| f.dual_wield)
+                            {
+                                1
+                            } else {
+                                p.last_weapon_hand
+                            }
+                        })
+                        .unwrap_or(0),
                     perks0: ps.map(|p| p.perks[0]).unwrap_or(0),
                     clip_ammo: clip_ammo(0),
                     left_clip_ammo: clip_ammo(1),
@@ -674,9 +689,12 @@ pub fn tick_fpv_viewmodel(
     let rocket_visible = table.is_some_and(|table| {
         fpv_rocket_should_attach(table, session.weapon_id, presented.player(local.0))
     });
-    let dual = presented
-        .viewweapon_player(local.0)
-        .is_some_and(|ps| ps.last_weapon_hand == 1);
+    let dual = presented.viewweapon_player(local.0).is_some_and(|ps| {
+        ps.last_weapon_hand == 1
+            || table
+                .and_then(|t| t.facts_of(session.weapon_id))
+                .is_some_and(|f| f.dual_wield)
+    });
     let dual_offset = if dual {
         presented.viewweapon_player(local.0).and_then(|ps| {
             table?
@@ -700,6 +718,12 @@ pub fn tick_fpv_viewmodel(
         active: active_rig,
         cursor: &mut cursor.0,
         rocket: rocket_visible,
+        melee: presented.viewweapon_player(local.0).is_some_and(|ps| {
+            matches!(
+                weapon_iw4::WeaponState::from_i32(ps.weaponstate_primary),
+                Ok(weapon_iw4::WeaponState::MeleeInit | weapon_iw4::WeaponState::MeleeFire)
+            )
+        }),
         sample,
         predicted_fire,
         dual,
@@ -711,6 +735,9 @@ pub fn tick_fpv_viewmodel(
             pending_notes.names.clone_from(&frame.notetracks);
         }
         // Nothing downstream of the bones waits for a vertex.
+        if let Some(bolt) = frame.secondary_bolt.take() {
+            bolts.set_pose(1, bolt);
+        }
         for (hand, pose) in frame.poses.iter_mut().enumerate() {
             if let Some(pose) = pose.as_mut() {
                 bolts.set_pose(hand, core::mem::take(&mut pose.bolt));
@@ -989,6 +1016,10 @@ pub fn apply_fpv_placement(
     };
     let mut steps = [WeaponPlacementAssembleStep::Sway; PLACEMENT_ASSEMBLE_STEP_COUNT];
 
+    let mut idle = facts.idle;
+    if facts.can_hold_breath {
+        idle.ads_idle_amount *= ps.hold_breath_scale;
+    }
     let contrib = weapon_placement_assemble(
         &mut state,
         ps_in,
@@ -997,7 +1028,7 @@ pub fn apply_fpv_placement(
         facts.movement,
         kinematics,
         bob_inputs,
-        facts.idle,
+        idle,
         Some(waveform),
         hip,
         ads,
@@ -1060,6 +1091,11 @@ pub fn apply_fpv_placement(
     };
     *aim = ViewweaponAim {
         live: true,
+        weapon: viewmodel,
+        angle_offset: [
+            math_iw4::angle_subtract(gun_pitch, ps.viewangles[0]),
+            math_iw4::angle_subtract(gun_yaw, ps.viewangles[1]),
+        ],
         gun_pitch,
         gun_yaw,
         xhair_x: xhair[0],

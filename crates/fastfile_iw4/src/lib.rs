@@ -5,7 +5,6 @@ mod asset_type;
 mod content;
 mod envelope;
 mod load;
-pub mod shader;
 mod stream;
 mod wire;
 mod zone;

@@ -250,6 +250,7 @@ pub const GFX_WORLD_DRAW_OFF: usize = 0x158;
 pub const GFX_WORLD_LIGHT_GRID_OFF: usize = 0x218;
 pub const GFX_WORLD_MODEL_COUNT_OFF: usize = 0x250;
 pub const GFX_WORLD_MODELS_OFF: usize = 0x254;
+pub const GFX_WORLD_MINS_OFF: usize = 0x258;
 pub const GFX_WORLD_MATERIAL_MEMORY_COUNT_OFF: usize = 0x274;
 pub const GFX_WORLD_MATERIAL_MEMORY_OFF: usize = 0x278;
 pub const GFX_WORLD_SUN_OFF: usize = 0x27c;
@@ -444,10 +445,15 @@ pub const SND_ALIAS_PITCH_MIN_OFF: usize = 50;
 pub const SND_ALIAS_PITCH_MAX_OFF: usize = 52;
 pub const SND_ALIAS_DIST_MIN_OFF: usize = 56;
 pub const SND_ALIAS_DIST_MAX_OFF: usize = 58;
+pub const SND_ALIAS_PRIORITY_DISTANCE_OFF: usize = 60;
 pub const SND_ALIAS_ENVELOP_MIN_OFF: usize = 62;
 pub const SND_ALIAS_ENVELOP_MAX_OFF: usize = 64;
 pub const SND_ALIAS_ENVELOP_PERCENTAGE_OFF: usize = 66;
+pub const SND_ALIAS_PRIORITY_MIN_THRESHOLD_OFF: usize = 68;
+pub const SND_ALIAS_PRIORITY_MAX_THRESHOLD_OFF: usize = 69;
 pub const SND_ALIAS_PROBABILITY_OFF: usize = 70;
+pub const SND_ALIAS_PRIORITY_MIN_OFF: usize = 73;
+pub const SND_ALIAS_PRIORITY_MAX_OFF: usize = 74;
 
 pub const SND_ALIAS_LIMIT_COUNT_OFF: usize = 80;
 pub const SND_ALIAS_ENTITY_LIMIT_COUNT_OFF: usize = 81;
@@ -616,6 +622,7 @@ pub const WEAPON_DEF_IDLE_PRONE_FACTOR_OFF: usize = 0x514;
 pub const WEAPON_DEF_GUN_MAX_PITCH_OFF: usize = 0x518;
 pub const WEAPON_DEF_GUN_MAX_YAW_OFF: usize = 0x51c;
 
+pub const WEAPON_DEF_IMPACT_PAYLOAD_OFF: usize = 0x58c;
 pub const WEAPON_DEF_PROJECTILE_SPEED_OFF: usize = 0x5c8;
 pub const WEAPON_DEF_PROJECTILE_SPEED_UP_OFF: usize = 0x5cc;
 pub const WEAPON_DEF_PROJECTILE_ACTIVATE_DIST_OFF: usize = 0x5d8;
@@ -626,8 +633,18 @@ pub const WEAPON_DEF_EXPLOSION_INNER_DAMAGE_OFF: usize = 0x5bc;
 pub const WEAPON_DEF_EXPLOSION_OUTER_DAMAGE_OFF: usize = 0x5c0;
 
 pub const WEAPON_DEF_PROJ_EXPLOSION_TYPE_OFF: usize = 0x5ec;
+pub const WEAPON_DEF_PROJ_EXPLOSION_EFFECT_OFF: usize = 0x5f0;
+pub const WEAPON_DEF_PROJ_EXPLOSION_SOUND_OFF: usize = 0x61c;
+pub const WEAPON_DEF_PROJ_TRAIL_EFFECT_OFF: usize = 0x658;
+pub const WEAPON_DEF_PROJ_IGNITION_EFFECT_OFF: usize = 0x674;
+pub const WEAPON_DEF_PROJ_IGNITION_SOUND_OFF: usize = 0x678;
 
 pub const WEAPON_DEF_PROJ_IMPACT_EXPLODE_OFF: usize = 0x62c;
+
+pub const WEAPON_DEF_STICKINESS_OFF: usize = 0x630;
+pub const WEAPON_DEF_HAS_DETONATOR_OFF: usize = 0x639;
+pub const WEAPON_DEF_TIMED_DETONATION_OFF: usize = 0x63a;
+pub const WEAPON_DEF_ROTATE_OFF: usize = 0x63c;
 
 pub const WEAPON_DEF_HOLD_BUTTON_TO_THROW_OFF: usize = 0x63e;
 
@@ -647,6 +664,9 @@ pub const WEAPON_DEF_FUSE_TIME_OFF: usize = 0x46c;
 pub const WEAPON_DEF_HOLD_FIRE_TIME_OFF: usize = 0x3bc;
 const _: () = assert!(WEAPON_DEF_RECHAMBER_BOLT_TIME_OFF == WEAPON_RECHAMBER_TIME_OFF + 4);
 const _: () = assert!(WEAPON_DEF_HOLD_FIRE_TIME_OFF == WEAPON_DEF_RECHAMBER_BOLT_TIME_OFF + 4);
+
+pub const WEAPON_DEF_DUAL_WIELD_OFF: usize = 0x56a;
+pub const WEAPON_DEF_DUAL_WIELD_WEAPON_NAME_OFF: usize = 0x590;
 
 pub const WEAPON_DEF_COOK_OFF_HOLD_OFF: usize = 0x560;
 pub const WEAPON_DEF_AIM_DOWN_SIGHT_OFF: usize = 0x553;
@@ -746,6 +766,12 @@ pub mod weap_anim {
     pub const ADS_FIRE: usize = 0x2A;
     pub const ADS_LASTSHOT: usize = 0x2B;
     pub const ADS_RECHAMBER: usize = 0x2C;
+    pub const FIRE_LEFT: usize = 0x3A;
+    pub const LASTSHOT_LEFT: usize = 0x3B;
+    pub const IDLE_LEFT: usize = 0x3C;
+    pub const EMPTY_IDLE_LEFT: usize = 0x3D;
+    pub const RELOAD_EMPTY_LEFT: usize = 0x3E;
+    pub const RELOAD_LEFT: usize = 0x3F;
     pub const ADS_UP: usize = 0x40;
     pub const ADS_DOWN: usize = 0x41;
 }

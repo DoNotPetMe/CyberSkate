@@ -192,6 +192,10 @@ pub struct CapturedAlias {
 
     pub t5_distance_curves: Option<[u8; 2]>,
 
+    pub near_falloff: Option<CapturedSndCurve>,
+
+    pub voice_priority: Option<VoicePriority>,
+
     pub envelop_min: f32,
     pub envelop_max: f32,
     pub envelop_percentage: f32,
@@ -285,6 +289,34 @@ fn capture_loaded_edge(
             }
             _ => AssetEdge::Absent,
         },
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VoicePriority {
+    pub thresholds: [u8; 2],
+    pub values: [u8; 2],
+    pub distance_max: f32,
+}
+
+impl VoicePriority {
+    pub fn evaluate(&self, distance: Option<f32>) -> f32 {
+        let volume = distance.map_or(0.0, |distance| {
+            if self.distance_max > 0.0 {
+                1.0 - (distance / self.distance_max).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        });
+        let [low, high] = self.thresholds.map(|value| f32::from(value) / 255.0);
+        let [min, max] = self.values.map(f32::from);
+        if volume <= low {
+            min
+        } else if volume >= high {
+            max
+        } else {
+            min + (max - min) * (volume - low) / (high - low)
+        }
     }
 }
 
@@ -614,6 +646,24 @@ impl SoundCatalog {
         self.loaded.push(loaded);
     }
 
+    pub fn script_alias_looping(&self) -> std::collections::BTreeMap<String, Option<bool>> {
+        self.sounds
+            .iter()
+            .flat_map(|sound| {
+                let namespace = ns_of(sound.game);
+                let name = sound.name.to_ascii_lowercase();
+                let looping = sound
+                    .aliases
+                    .first()
+                    .and_then(CapturedAlias::decoded_flags)
+                    .map(SndAliasFlags::looping);
+                let qualified = format!("{}:{name}", namespace.as_str());
+                std::iter::once((qualified, looping))
+                    .chain((namespace == AssetNamespace::Iw4).then_some((name, looping)))
+            })
+            .collect()
+    }
+
     pub fn index_in(&self, ns: AssetNamespace, alias: &str) -> Option<usize> {
         if let Some(&i) = self.by_alias.get(&(ns, alias.to_owned())) {
             return Some(i);
@@ -828,15 +878,8 @@ impl SoundCatalog {
                     let dry = self.curves.get(&format!("t5/curve/{dry}"));
                     let near = self.curves.get(&format!("t5/curve/{near}"));
 
-                    if let (Some(dry), Some(near)) = (dry, near)
-                        && near
-                            .knots
-                            .iter()
-                            .position(|&(x, _)| x >= 1.0)
-                            .is_some_and(|end| near.knots[..=end].iter().all(|&(_, y)| y == 1.0))
-                        && dry.knots.first() == Some(&(0.0, 1.0))
-                        && dry.knots.last() == Some(&(1.0, 0.0))
-                    {
+                    if let (Some(dry), Some(near)) = (dry, near) {
+                        self.sounds[i].aliases[j].near_falloff = Some(near.clone());
                         self.sounds[i].aliases[j].volume_falloff = Some(dry.clone());
                     } else {
                         remaining += 1;
@@ -1148,7 +1191,7 @@ impl SoundCatalog {
             .and_then(|index| self.pcm_at(index));
         let layer = own_pcm.is_some().then(|| row.secondary.clone()).flatten();
         let pcm = own_pcm.or_else(|| {
-            if depth >= 10 {
+            if ns == AssetNamespace::T5 || depth >= 10 {
                 return None;
             }
             row.secondary.as_deref().and_then(|sec| {
@@ -1165,7 +1208,7 @@ impl SoundCatalog {
         };
         let t_vol = unit_random(rng);
         let t_pitch = unit_random(rng);
-        let volume = if row.vol_min == 0.0 && row.vol_max == 0.0 {
+        let volume = if ns != AssetNamespace::T5 && row.vol_min == 0.0 && row.vol_max == 0.0 {
             1.0
         } else {
             lerp_range(row.vol_min, row.vol_max, t_vol)
@@ -1605,6 +1648,8 @@ impl AssetLinkSink for SoundCatalog {
                     .unwrap_or(0),
                 volume_falloff,
                 t5_distance_curves: None,
+                near_falloff: None,
+                voice_priority: None,
                 envelop_min: s
                     .f32_at(row, s.layout(SND_ALIAS_ENVELOP_MIN, 112))
                     .unwrap_or(0.0),

@@ -85,12 +85,8 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             });
         )*};
     }
-    presented![
-        "setexpfog",
-        "setthermalbodymaterial",
-        "ambientplay",
-        "ambientstop",
-    ];
+    registry.register(Function, "setexpfog", super::scene_effects::set_exp_fog);
+    presented!["setthermalbodymaterial"];
     registry.register(Function, "getmapcustom", |world, _, args| {
         let key = string(args, 0)?;
         Ok(Value::string(
@@ -129,6 +125,9 @@ pub(crate) fn precache(world: &mut World, kind: &'static str, name: String) -> R
         ));
     }
     let index = 1 + runtime.precached.keys().filter(|(k, _)| *k == kind).count() as i32;
+    if kind == "rumble" && (index > 255 || name.is_empty() || name.len() > 1023) {
+        return Err("rumble precache requires a 1–1023 byte name and at most 255 aliases".into());
+    }
     runtime.precached.insert((kind, name), index);
     Ok(index)
 }
@@ -164,6 +163,9 @@ fn dvar_name(args: &[Value]) -> Result<String, String> {
 fn dvar_value(args: &[Value]) -> Result<String, String> {
     if let Some(Value::LocalizedString(reference)) = args.get(1) {
         return Ok(reference.to_string());
+    }
+    if let Some(Value::Vector(v)) = args.get(1) {
+        return Ok(format!("{} {} {}", v[0], v[1], v[2]));
     }
     string(args, 1)
 }

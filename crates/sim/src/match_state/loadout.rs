@@ -88,6 +88,41 @@ pub struct LoadoutSpec {
     pub perks: [u32; 3],
 }
 
+pub const PERSONAL_CLASS_SLOTS: usize = 5;
+
+pub const CLASS_CATALOG_DEATHSTREAKS: [&str; 4] = [
+    "specialty_copycat",
+    "specialty_combathigh",
+    "specialty_grenadepulldeath",
+    "specialty_finalstand",
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PersonalClass {
+    pub weapons: [u32; 4],
+    pub perks: [u32; 3],
+    pub deathstreak: u8,
+}
+
+impl PersonalClass {
+    pub fn definition(self, id: ClassId, revision: u32) -> Option<ClassDef> {
+        if revision == 0 {
+            return None;
+        }
+        let mut def = ClassDef::primary_secondary(id, revision, self.weapons[0], self.weapons[1]);
+        def.lethal = self.weapons[2];
+        def.tactical = self.weapons[3];
+        def.perks = self.perks;
+        def.deathstreak = if self.deathstreak == 0 {
+            String::new()
+        } else {
+            CLASS_CATALOG_DEATHSTREAKS
+                .get(self.deathstreak as usize - 1)?
+                .to_string()
+        };
+        Some(def)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassDef {

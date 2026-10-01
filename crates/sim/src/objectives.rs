@@ -7,11 +7,19 @@ pub struct ObjectiveMatch {
     pub vehicles: Vec<CompassVehicle>,
     pub server_info: Vec<(String, String)>,
     pub game_end_time: i32,
+    pub slow_motion: Option<crate::ScriptSlowMotion>,
+    pub ambient: Option<crate::ScriptAmbient>,
+    pub ac130_ambient: Option<crate::ScriptAmbient>,
+    pub rumble_aliases: Vec<(i32, String)>,
     pub scripted_effects: bool,
     pub effects: Vec<ScriptEffect>,
+    pub fog: Option<crate::ScriptFog>,
+    pub earthquakes: Vec<crate::ScriptEarthquake>,
     pub naked_vision: Option<crate::VisionChange>,
     pub thermal_vision: Option<crate::VisionChange>,
     pub missile_vision: Option<crate::VisionChange>,
+    pub night_vision: Option<crate::VisionChange>,
+    pub pain_vision: Option<crate::VisionChange>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

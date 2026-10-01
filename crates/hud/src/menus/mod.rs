@@ -281,6 +281,16 @@ pub(crate) fn update_script_menus(
             UiMenuRequest::Toggle => pressed.escape = true,
             UiMenuRequest::Open(name) => runner.open(&name),
             UiMenuRequest::Close(name) => runner.close(&name),
+            UiMenuRequest::Focus { menu, item } => {
+                if let Some(index) = runner.catalog.get(&menu).and_then(|definition| {
+                    definition
+                        .items
+                        .iter()
+                        .position(|candidate| candidate.name == item)
+                }) {
+                    runner.set_focus(&menu, index);
+                }
+            }
             UiMenuRequest::Key(UiMenuKey::Escape) => pressed.escape = true,
             UiMenuRequest::Key(UiMenuKey::Enter) => pressed.enter = true,
             UiMenuRequest::Key(UiMenuKey::Up) => pressed.up = true,
@@ -392,6 +402,9 @@ pub(crate) fn update_script_menus(
             }
             if item.item_type == 4 && !item.dvar.is_empty() {
                 item.text_key = out.dvars.get(&item.dvar).unwrap_or("").to_owned();
+                if item.edit_field.as_ref().is_some_and(|field| field.masked) {
+                    item.text_key = "*".repeat(item.text_key.chars().count());
+                }
                 item.text_literal = true;
                 item.text_exp.clear();
             }
@@ -440,7 +453,8 @@ pub(crate) fn update_script_menus(
                 let displayed = slider
                     .display_range
                     .map_or(value, |[min, max]| min + fraction * (max - min));
-                label.text_key = format!("{displayed:.0}{}", slider.suffix);
+                let decimals = usize::from(slider.decimals.min(6));
+                label.text_key = format!("{displayed:.decimals$}{}", slider.suffix);
                 label.rect.x += item.rect.w + 8.0;
                 label.rect.w = 36.0;
                 slider_parts.push(label);
@@ -461,7 +475,11 @@ pub(crate) fn update_script_menus(
             && edit.menu == open.name
             && let Some(item) = painted.items.get_mut(edit.item)
         {
-            let mut text = edit.buffer.clone();
+            let mut text = if item.edit_field.as_ref().is_some_and(|field| field.masked) {
+                vec!['*'; edit.buffer.len()]
+            } else {
+                edit.buffer.clone()
+            };
             text.insert(edit.cursor.min(text.len()), '|');
             item.text_key = text.into_iter().collect();
             item.text_exp.clear();
@@ -593,10 +611,12 @@ fn handle_input(
                     .set(&item.dvar, edit.buffer.iter().collect::<String>());
                 let value: String = edit.buffer.iter().collect();
                 let value = value.replace('\\', "\\\\").replace('"', "\\\"");
-                runner
-                    .menus
-                    .exec
-                    .push(format!("set {} \"{}\"", item.dvar, value));
+                if !item.edit_field.as_ref().is_some_and(|field| field.masked) {
+                    runner
+                        .menus
+                        .exec
+                        .push(format!("set {} \"{}\"", item.dvar, value));
+                }
                 runner.run_events(&edit.menu, Some(edit.item), &item.handlers.accept);
             }
             return;
@@ -666,8 +686,6 @@ fn handle_input(
     if pressed.up {
         runner.focus_nav(&top, 0, -1);
     }
-    // Left and right change a slider or choice, and otherwise move focus
-    // across to the next column.
     if pressed.left || pressed.right {
         let step = if pressed.left { -1 } else { 1 };
         let focus = runner.menus.stack.last().and_then(|m| m.focus);
@@ -764,6 +782,18 @@ fn flush_outputs(menus: &mut ScriptMenus, out: &mut MenuOutputs, local: sim::Cli
         return;
     };
     for (menu, response) in menus.responses.drain(..) {
+        if menu.eq_ignore_ascii_case("changeclass")
+            && let Some(slot) = response
+                .strip_prefix("custom")
+                .and_then(|n| n.parse::<usize>().ok())
+                .and_then(|n| n.checked_sub(1))
+                .filter(|slot| *slot < sim::match_state::PERSONAL_CLASS_SLOTS)
+        {
+            out.exec.write(UiExecCommand {
+                text: format!("spawn {slot} &"),
+            });
+            continue;
+        }
         let (Some(menu_field), Some(response_field)) = (
             sim::menu_response_field(&menu),
             sim::menu_response_field(&response),

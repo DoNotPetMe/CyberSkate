@@ -67,6 +67,7 @@ impl Plugin for RenderPreparePlugin {
             .init_resource::<crate::assemble::drawsurf::DrawMethodDfog>()
             .init_resource::<crate::assemble::drawsurf::fog::FogDvars>()
             .init_resource::<crate::assemble::drawsurf::SunShadowMapPresent>()
+            .init_resource::<crate::assemble::drawsurf::SunShadowUnmatchedLights>()
             .init_resource::<crate::assemble::drawsurf::SpotShadowMapLights>()
             .init_resource::<crate::assemble::drawsurf::SunShadowCasterPlan>()
             .init_resource::<crate::assemble::drawsurf::SpotShadowCasterPlan>()
@@ -77,6 +78,7 @@ impl Plugin for RenderPreparePlugin {
             .init_resource::<crate::assemble::drawsurf::DistortionSettings>()
             .init_resource::<crate::assemble::drawsurf::SunProduct>()
             .init_resource::<crate::assemble::drawsurf::SpotProduct>()
+            .init_resource::<crate::assemble::drawsurf::fog::ScriptFogPresentation>()
             .init_resource::<FpvDrawPlan>()
             .init_resource::<crate::assemble::drawsurf::RemoteBodyDrawPlan>()
             .init_resource::<crate::assemble::drawsurf::ScriptModelDrawPlan>()
@@ -97,6 +99,9 @@ impl Plugin for RenderPreparePlugin {
                     crate::assemble::drawsurf::tess::glass::apply_cg_glass_tess
                         .after(spawn_world)
                         .after(WorkerCmdSet::FxNonDependent),
+                    crate::assemble::drawsurf::fog::sync_script_fog
+                        .after(spawn_world_finish)
+                        .before(stamp_prepared_scene_view),
                     fly_camera,
                     stamp_prepared_scene_view
                         .after(fly_camera)
@@ -189,7 +194,15 @@ impl Plugin for RenderPreparePlugin {
                 apply_dpvs_cull
                     .after(fly_camera)
                     .after(stamp_prepared_scene_view)
+                    .after(crate::prepare::scene::sun_stage::update_active_sun_stage)
                     .in_set(WorkerCmdSet::CellStatic),
+            )
+            .add_systems(
+                Update,
+                crate::prepare::scene::sun_stage::update_active_sun_stage
+                    .after(stamp_prepared_scene_view)
+                    .before(crate::assemble::drawsurf::update_command_context_code_sources)
+                    .in_set(ClientSet::Present),
             )
             .init_resource::<frame::Retiring>()
             .add_systems(

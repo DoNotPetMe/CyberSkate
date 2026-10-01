@@ -14,25 +14,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         local_sound(world, receiver, args, true)
     });
 
-    registry.register(Function, "visionsetnaked", |world, _, args| {
-        let vision = vision_change(world, args)?;
-        let mut frame = FrameWorld::from_world(world);
-        for client in frame.client_ids_sorted() {
-            frame.client_meta_mut(client).view_effects.naked_vision = None;
-        }
-        world.resource_mut::<Runtime>().engine.naked_vision = Some(vision);
-        Ok(Value::Undefined)
-    });
-    registry.register(
-        Method,
-        "visionsetnakedforplayer",
-        |world, receiver, args| {
-            let client = player(world, receiver)?;
-            let vision = vision_change(world, args)?;
-            edit_view(world, client, |view| view.naked_vision = Some(vision));
-            Ok(Value::Undefined)
-        },
-    );
     registry.register(Method, "setdepthoffield", |world, receiver, args| {
         let client = player(world, receiver)?;
         let dof = depth_of_field(args)?;
@@ -40,11 +21,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         Ok(Value::Undefined)
     });
 
-    macro_rules! unsupported {
-        ($namespace:ident, $effect:literal: $($name:literal),* $(,)?) => {$(
-            registry.register($namespace, $name, |world, _, _| unsupported(world, $name, $effect));
-        )*};
-    }
     macro_rules! vision_channel {
         ($global:literal, $player:literal, $field:ident) => {
             registry.register(Function, $global, |world, _, args| {
@@ -64,6 +40,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             });
         };
     }
+    vision_channel!("visionsetnaked", "visionsetnakedforplayer", naked_vision);
     vision_channel!(
         "visionsetthermal",
         "visionsetthermalforplayer",
@@ -74,10 +51,27 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         "visionsetmissilecamforplayer",
         missile_vision
     );
-    unsupported!(Function, "vision channel": "visionsetnight", "visionsetpain");
-    unsupported!(Method, "screen blur": "setblurforplayer");
-    unsupported!(Method, "script rumble": "playrumbleonentity", "stoprumble");
-    unsupported!(Function, "script rumble": "playrumbleonposition");
+    vision_channel!("visionsetnight", "visionsetnightforplayer", night_vision);
+    vision_channel!("visionsetpain", "visionsetpainforplayer", pain_vision);
+    registry.register(Method, "setblurforplayer", |world, receiver, args| {
+        let client = player(world, receiver)?;
+        let to = float(args, 0)?;
+        let seconds = optional(args, 1, float)?.unwrap_or(0.0);
+        if args.len() > 2 || !to.is_finite() || to < 0.0 || !seconds.is_finite() || seconds < 0.0 {
+            return Err("setBlurForPlayer requires a nonnegative blur and transition time".into());
+        }
+        let now = crate::level_time_ms(world.resource::<crate::step::StepRequest>().tick);
+        edit_view(world, client, |view| {
+            view.blur = Some(crate::ScriptBlur {
+                from: view.blur.map_or(0.0, |blur| blur.sample(now)),
+                to,
+                set_ms: now,
+                duration_ms: (seconds * 1000.0).round() as i32,
+            });
+        });
+        Ok(Value::Undefined)
+    });
+    super::rumble::register(registry);
 }
 
 fn local_sound(
@@ -166,17 +160,4 @@ fn edit_view(world: &mut World, client: u32, edit: impl FnOnce(&mut crate::ViewE
     if frame.client_meta(ClientId(client)).is_some() {
         edit(&mut frame.client_meta_mut(ClientId(client)).view_effects);
     }
-}
-
-fn unsupported(world: &mut World, name: &'static str, effect: &str) -> Result<Value, String> {
-    let mut runtime = world.resource_mut::<Runtime>();
-    let hits = runtime.unsupported.entry(name).or_default();
-    *hits += 1;
-    if *hits == 1 {
-        diag::warn!(
-            Sim,
-            "gsc: {name} is unsupported: no {effect} executor on the client"
-        );
-    }
-    Ok(Value::Undefined)
 }

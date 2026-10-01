@@ -194,59 +194,57 @@ pub(crate) fn route(
                         .slots
                         .get_mut(selected)
                         .ok_or("Class is unavailable")?;
+                    let mut candidate = slot.clone();
                     if state.attachments {
                         let mut chosen = if row == ClassEditRow::Primary {
-                            slot.primary_attachments.clone()
+                            candidate.primary_attachments.clone()
                         } else {
-                            slot.secondary_attachments.clone()
+                            candidate.secondary_attachments.clone()
                         };
                         if value.is_empty() {
                             chosen.clear();
                         } else if let Some(at) = chosen.iter().position(|name| name == &value) {
                             chosen.remove(at);
                         } else {
-                            if slot.loadout_rules().max_attachments == 1 {
+                            if candidate.loadout_rules().max_attachments == 1 {
                                 chosen.clear();
                             }
                             chosen.push(value);
                         }
                         catalog
                             .check_attachments(
-                                row,
-                                slot.row_value(row),
+                                candidate.row_value(row),
                                 &chosen,
-                                slot.loadout_rules(),
+                                candidate.loadout_rules(),
                             )
                             .map_err(|error| format!("{error:?}"))?;
                         if row == ClassEditRow::Primary {
-                            slot.primary_attachments = chosen;
+                            candidate.primary_attachments = chosen;
                         } else {
-                            slot.secondary_attachments = chosen;
+                            candidate.secondary_attachments = chosen;
                         }
                     } else {
-                        slot.set_row(row, value);
-                        let rules = slot.loadout_rules();
-                        for (row, weapon, chosen) in [
-                            (
-                                ClassEditRow::Primary,
-                                &slot.primary,
-                                &mut slot.primary_attachments,
-                            ),
-                            (
-                                ClassEditRow::Secondary,
-                                &slot.secondary,
-                                &mut slot.secondary_attachments,
-                            ),
+                        candidate.set_row(row, value);
+                        let rules = candidate.loadout_rules();
+                        for (weapon, chosen) in [
+                            (&candidate.primary, &mut candidate.primary_attachments),
+                            (&candidate.secondary, &mut candidate.secondary_attachments),
                         ] {
                             while !chosen.is_empty()
-                                && catalog
-                                    .check_attachments(row, weapon, chosen, rules)
-                                    .is_err()
+                                && catalog.check_attachments(weapon, chosen, rules).is_err()
                             {
                                 chosen.pop();
                             }
                         }
                     }
+                    catalog.validate_edit(&candidate, row)?;
+                    candidate.lock_reason = catalog.validate_class(&candidate).err();
+                    if slot.lock_reason.is_none()
+                        && let Some(reason) = &candidate.lock_reason
+                    {
+                        return Err(reason.clone());
+                    }
+                    *slot = candidate;
                     echo.write(format!(
                         "menu: class {} {} = {}",
                         selected + 1,
@@ -271,13 +269,27 @@ pub(crate) fn route(
                         .slots
                         .get_mut(selected)
                         .ok_or("Class is unavailable")?;
-                    let preset = ui::showcase_classes()
+                    let candidate = if let Some(preset) = ui::showcase_classes()
                         .iter()
                         .find(|preset| preset.name == slot.name)
-                        .ok_or("Class has no preset to reset to")?;
-                    let lock = slot.lock_reason.take();
-                    *slot = ui::ClassSlotState::from_preset(preset);
-                    slot.lock_reason = lock;
+                    {
+                        ui::ClassSlotState::from_preset(preset)
+                    } else {
+                        let registry = catalog
+                            .resolver
+                            .0
+                            .as_deref()
+                            .ok_or("Weapon catalog is not ready")?;
+                        let mut default = ui::SessionClassStore::from_showcase(0, registry)
+                            .slots
+                            .into_iter()
+                            .nth(selected)
+                            .ok_or("No available default class")?;
+                        default.name.clone_from(&slot.name);
+                        default
+                    };
+                    catalog.validate_class(&candidate)?;
+                    *slot = candidate;
                     dvars.set("ui_class_name", &slot.name);
                 }
                 "ui_class_rename" => {
@@ -329,6 +341,11 @@ pub(crate) fn route(
         );
     }
     if let Some(slot) = store.slots.get(store.selected) {
+        if dvars.get("ui_class_status").is_none_or(str::is_empty)
+            && let Some(reason) = &slot.lock_reason
+        {
+            dvars.set("ui_class_status", format!("Class unavailable: {reason}"));
+        }
         dvars.set("ui_class_title", &slot.name);
         dvars.set("ui_class_saved_name", &slot.name);
         dvars.set("ui_class_index", store.selected.to_string());

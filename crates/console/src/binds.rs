@@ -31,13 +31,12 @@ impl BindButton {
     }
 }
 
-/// A controller button, named as MW2's console builds name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PadButton {
-    A,
-    B,
-    X,
-    Y,
+    South,
+    East,
+    West,
+    North,
     LeftBumper,
     RightBumper,
     LeftTrigger,
@@ -48,16 +47,16 @@ pub enum PadButton {
     DpadDown,
     DpadLeft,
     DpadRight,
-    Back,
+    Select,
     Start,
 }
 
 impl PadButton {
     pub const ALL: [Self; 16] = [
-        Self::A,
-        Self::B,
-        Self::X,
-        Self::Y,
+        Self::South,
+        Self::East,
+        Self::West,
+        Self::North,
         Self::LeftBumper,
         Self::RightBumper,
         Self::LeftTrigger,
@@ -68,16 +67,16 @@ impl PadButton {
         Self::DpadDown,
         Self::DpadLeft,
         Self::DpadRight,
-        Self::Back,
+        Self::Select,
         Self::Start,
     ];
 
     pub const fn gamepad_button(self) -> GamepadButton {
         match self {
-            Self::A => GamepadButton::South,
-            Self::B => GamepadButton::East,
-            Self::X => GamepadButton::West,
-            Self::Y => GamepadButton::North,
+            Self::South => GamepadButton::South,
+            Self::East => GamepadButton::East,
+            Self::West => GamepadButton::West,
+            Self::North => GamepadButton::North,
             Self::LeftBumper => GamepadButton::LeftTrigger,
             Self::RightBumper => GamepadButton::RightTrigger,
             Self::LeftTrigger => GamepadButton::LeftTrigger2,
@@ -88,22 +87,23 @@ impl PadButton {
             Self::DpadDown => GamepadButton::DPadDown,
             Self::DpadLeft => GamepadButton::DPadLeft,
             Self::DpadRight => GamepadButton::DPadRight,
-            Self::Back => GamepadButton::Select,
+            Self::Select => GamepadButton::Select,
             Self::Start => GamepadButton::Start,
         }
     }
 
     pub fn from_gamepad_button(button: GamepadButton) -> Option<Self> {
-        Self::ALL.into_iter().find(|pad| pad.gamepad_button() == button)
+        Self::ALL
+            .into_iter()
+            .find(|pad| pad.gamepad_button() == button)
     }
 
-    /// The console key name, as `bind` takes it.
     pub const fn console_name(self) -> &'static str {
         match self {
-            Self::A => "BUTTON_A",
-            Self::B => "BUTTON_B",
-            Self::X => "BUTTON_X",
-            Self::Y => "BUTTON_Y",
+            Self::South => "BUTTON_A",
+            Self::East => "BUTTON_B",
+            Self::West => "BUTTON_X",
+            Self::North => "BUTTON_Y",
             Self::LeftBumper => "BUTTON_LSHLDR",
             Self::RightBumper => "BUTTON_RSHLDR",
             Self::LeftTrigger => "BUTTON_LTRIG",
@@ -114,18 +114,17 @@ impl PadButton {
             Self::DpadDown => "DPAD_DOWN",
             Self::DpadLeft => "DPAD_LEFT",
             Self::DpadRight => "DPAD_RIGHT",
-            Self::Back => "BUTTON_BACK",
+            Self::Select => "BUTTON_BACK",
             Self::Start => "BUTTON_START",
         }
     }
 
-    /// The short label the controls screen shows.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::A => "A",
-            Self::B => "B",
-            Self::X => "X",
-            Self::Y => "Y",
+            Self::South => "A",
+            Self::East => "B",
+            Self::West => "X",
+            Self::North => "Y",
             Self::LeftBumper => "LB",
             Self::RightBumper => "RB",
             Self::LeftTrigger => "LT",
@@ -136,8 +135,39 @@ impl PadButton {
             Self::DpadDown => "D-DOWN",
             Self::DpadLeft => "D-LEFT",
             Self::DpadRight => "D-RIGHT",
-            Self::Back => "BACK",
+            Self::Select => "BACK",
             Self::Start => "START",
+        }
+    }
+
+    pub const fn prompt(self, style: frame::PromptStyle) -> &'static str {
+        use frame::PromptStyle::*;
+        match (style, self) {
+            (Xbox, _) => self.label(),
+            (PlayStation, Self::South) => "×",
+            (PlayStation, Self::East) => "○",
+            (PlayStation, Self::West) => "□",
+            (PlayStation, Self::North) => "△",
+            (PlayStation, Self::LeftBumper) => "L1",
+            (PlayStation, Self::RightBumper) => "R1",
+            (PlayStation, Self::LeftTrigger) => "L2",
+            (PlayStation, Self::RightTrigger) => "R2",
+            (PlayStation, Self::LeftStick) => "L3",
+            (PlayStation, Self::RightStick) => "R3",
+            (PlayStation, Self::Select) => "SHARE",
+            (PlayStation, Self::Start) => "OPTIONS",
+            (Generic, Self::South) => "SOUTH",
+            (Generic, Self::East) => "EAST",
+            (Generic, Self::West) => "WEST",
+            (Generic, Self::North) => "NORTH",
+            (Generic, Self::LeftBumper) => "L-BUMPER",
+            (Generic, Self::RightBumper) => "R-BUMPER",
+            (Generic, Self::LeftTrigger) => "L-TRIGGER",
+            (Generic, Self::RightTrigger) => "R-TRIGGER",
+            (Generic, Self::LeftStick) => "L-STICK",
+            (Generic, Self::RightStick) => "R-STICK",
+            (Generic, Self::Select) => "SELECT",
+            _ => self.label(),
         }
     }
 
@@ -146,16 +176,18 @@ impl PadButton {
     }
 }
 
-/// MW2's console button layouts, as its controls menu offers them.
-pub const PAD_LAYOUT_NAMES: [&str; 5] = [
-    "Default",
-    "Tactical",
-    "Lefty",
-    "Bumper Jumper",
-    "Bumper Jumper Tactical",
-];
+pub(crate) fn gameplay_binding(button: BindButton, command: u32, akimbo: bool) -> u32 {
+    if !akimbo || !button.is_pad() {
+        return command;
+    }
+    let mapped = match command_name(command) {
+        Some("+attack") => "+speed_throw",
+        Some("+speed_throw") => "+attack",
+        _ => return command,
+    };
+    command_id_lookup(mapped).expect("built-in controller action")
+}
 
-/// A layout's buttons and the commands they drive.
 pub fn pad_layout(layout: usize) -> Vec<(PadButton, &'static str)> {
     use PadButton::*;
     let mut binds = vec![
@@ -163,24 +195,24 @@ pub fn pad_layout(layout: usize) -> Vec<(PadButton, &'static str)> {
         (LeftTrigger, "+speed_throw"),
         (RightBumper, "+frag"),
         (LeftBumper, "+smoke"),
-        (A, "+gostand"),
-        (B, "+stance"),
-        (X, "+usereload"),
-        (Y, "weapnext"),
+        (South, "+gostand"),
+        (East, "+stance"),
+        (West, "+usereload"),
+        (North, "weapnext"),
         (LeftStick, "+breath_sprint"),
         (RightStick, "+melee"),
         (DpadUp, "+actionslot 1"),
         (DpadDown, "+actionslot 2"),
         (DpadLeft, "+actionslot 3"),
         (DpadRight, "+actionslot 4"),
-        (Back, "+scores"),
+        (Select, "+scores"),
     ];
     let mut set = |button: PadButton, command: &'static str| {
         binds.retain(|(b, _)| *b != button);
         binds.push((button, command));
     };
     let tactical = |set: &mut dyn FnMut(PadButton, &'static str)| {
-        set(B, "+melee");
+        set(East, "+melee");
         set(RightStick, "+stance");
     };
     match layout {
@@ -193,7 +225,7 @@ pub fn pad_layout(layout: usize) -> Vec<(PadButton, &'static str)> {
         }
         3 | 4 => {
             set(LeftBumper, "+gostand");
-            set(A, "+smoke");
+            set(South, "+smoke");
             if layout == 4 {
                 tactical(&mut set);
             }
@@ -235,7 +267,11 @@ pub struct BindInputs<'a> {
 
 impl<'a> BindInputs<'a> {
     pub fn new(keys: &'a ButtonInput<KeyCode>, mouse: &'a ButtonInput<MouseButton>) -> Self {
-        Self { keys, mouse, pad: None }
+        Self {
+            keys,
+            mouse,
+            pad: None,
+        }
     }
 
     pub fn with_pad(mut self, pad: Option<&'a Gamepad>) -> Self {
@@ -248,7 +284,9 @@ impl<'a> BindInputs<'a> {
             BindButton::Key(key) => self.keys.pressed(key),
             BindButton::Mouse(btn) => self.mouse.pressed(btn),
             BindButton::WheelUp | BindButton::WheelDown => false,
-            BindButton::Pad(btn) => self.pad.is_some_and(|pad| pad.pressed(btn.gamepad_button())),
+            BindButton::Pad(btn) => self
+                .pad
+                .is_some_and(|pad| pad.pressed(btn.gamepad_button())),
         }
     }
 
@@ -257,7 +295,9 @@ impl<'a> BindInputs<'a> {
             BindButton::Key(key) => self.keys.just_pressed(key),
             BindButton::Mouse(btn) => self.mouse.just_pressed(btn),
             BindButton::WheelUp | BindButton::WheelDown => false,
-            BindButton::Pad(btn) => self.pad.is_some_and(|pad| pad.just_pressed(btn.gamepad_button())),
+            BindButton::Pad(btn) => self
+                .pad
+                .is_some_and(|pad| pad.just_pressed(btn.gamepad_button())),
         }
     }
 
@@ -266,7 +306,9 @@ impl<'a> BindInputs<'a> {
             BindButton::Key(key) => self.keys.just_released(key),
             BindButton::Mouse(btn) => self.mouse.just_released(btn),
             BindButton::WheelUp | BindButton::WheelDown => false,
-            BindButton::Pad(btn) => self.pad.is_some_and(|pad| pad.just_released(btn.gamepad_button())),
+            BindButton::Pad(btn) => self
+                .pad
+                .is_some_and(|pad| pad.just_released(btn.gamepad_button())),
         }
     }
 }
@@ -344,15 +386,13 @@ impl KeyBinds {
         self.map.clear();
     }
 
-    /// Unbinds a command from the keyboard and mouse, or from the
-    /// controller, leaving the other's binding alone.
     pub fn clear_command_on(&mut self, id: u32, pad: bool) -> bool {
         let before = self.map.len();
-        self.map.retain(|button, bound| *bound != id || button.is_pad() != pad);
+        self.map
+            .retain(|button, bound| *bound != id || button.is_pad() != pad);
         self.map.len() != before
     }
 
-    /// Replaces every controller binding with a console button layout.
     pub fn apply_pad_layout(&mut self, layout: usize) {
         self.map.retain(|button, _| !button.is_pad());
         for (button, command) in pad_layout(layout) {

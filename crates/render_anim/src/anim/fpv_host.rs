@@ -94,6 +94,7 @@ impl Default for FpvPoseKind {
 /// carries. No geometry — the surfaces this rig draws were settled when it was
 /// prepared, and the vertices are written straight into the published plan.
 pub struct FpvPosedFrame {
+    pub secondary_bolt: Option<FpvBoltFrame>,
     pub poses: [Option<FpvHandPose>; 2],
     pub lens: Mat4,
     pub idle_sampled: bool,
@@ -113,6 +114,7 @@ pub struct FpvGenerateArgs<'a> {
     pub active: &'a mut Option<Arc<PreparedFpvRig>>,
     pub cursor: &'a mut FpvPresentState,
     pub rocket: bool,
+    pub melee: bool,
     pub sample: Option<FpvAuthoritySample>,
     pub predicted_fire: bool,
     pub dual: bool,
@@ -127,6 +129,7 @@ pub fn generate_fpv_pose(args: FpvGenerateArgs<'_>) -> FpvPoseKind {
         active,
         cursor,
         rocket,
+        melee,
         sample,
         predicted_fire,
         dual,
@@ -162,7 +165,7 @@ pub fn generate_fpv_pose(args: FpvGenerateArgs<'_>) -> FpvPoseKind {
     };
     let dual_drawn = !left.is_empty();
 
-    let Some(prepared) = rigs.pick(rocket, dual_drawn) else {
+    let Some(prepared) = rigs.pick(rocket, dual_drawn, melee) else {
         *active = None;
         return FpvPoseKind::Refuse(FpvPoseRefuse::EyePoseFailed {
             gun_xmodel: equipped.gun_xmodel.clone(),
@@ -175,16 +178,28 @@ pub fn generate_fpv_pose(args: FpvGenerateArgs<'_>) -> FpvPoseKind {
         *active = Some(Arc::clone(prepared));
     }
 
-    let Some(right_pose) = prepared.pose_hand(0, &right, Vec3::ZERO) else {
+    let combined = prepared.combines_hands();
+    let pose = if combined {
+        prepared.pose_combined(&right, &left)
+    } else {
+        prepared.pose_hand(0, &right, Vec3::ZERO)
+    };
+    let Some(right_pose) = pose else {
         return FpvPoseKind::Refuse(FpvPoseRefuse::EyePoseFailed {
             gun_xmodel: equipped.gun_xmodel.clone(),
         });
     };
     let lens = right_pose.lens;
-    let left_pose = if dual_drawn {
+    let left_pose = if dual_drawn && !combined {
         let offset = dual_offset
             .filter(|offset| *offset != 0.0)
-            .map(|offset| Vec3::new(offset, 0.0, 0.0))
+            .map(|offset| {
+                Vec3::from_array(weapon_iw4::dual_wield_view_model_origin_add(
+                    1,
+                    [-1.0, 0.0, 0.0],
+                    offset,
+                ))
+            })
             .unwrap_or(Vec3::ZERO);
         // The rig laid out a left hand, so a left hand that cannot be posed is
         // a plan with a hole in it. Refusing the frame is the honest answer.
@@ -198,9 +213,11 @@ pub fn generate_fpv_pose(args: FpvGenerateArgs<'_>) -> FpvPoseKind {
         None
     };
 
+    let secondary_bolt = prepared.secondary_bolt(&right_pose);
     let poses = [Some(right_pose), left_pose];
     FpvPoseKind::Posed(FpvPosedFrame {
         poses,
+        secondary_bolt,
         lens,
         idle_sampled: true,
         notetracks: notifies,

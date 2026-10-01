@@ -26,24 +26,34 @@ pub const KEY_COUNT: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Kbutton {
-    pub down: [i32; 2],
+    pub down: [u64; 5],
     pub downtime: i32,
     pub msec: u32,
     pub active: bool,
     pub was_pressed: bool,
 }
 
-pub fn in_key_down(btn: &mut Kbutton, key: i32, extra_time: i32) {
-    if btn.down[0] == key || btn.down[1] == key {
-        return;
-    }
-    if btn.down[0] == 0 {
-        btn.down[0] = key;
-    } else if btn.down[1] == 0 {
-        btn.down[1] = key;
+fn held_key(key: i32) -> Option<(usize, u64)> {
+    let index = if key == SCRIPT_KEYNUM {
+        KEY_COUNT
     } else {
+        let index = usize::try_from(key).ok()?;
+        if index >= KEY_COUNT {
+            return None;
+        }
+        index
+    };
+    Some((index / 64, 1 << (index % 64)))
+}
+
+pub fn in_key_down(btn: &mut Kbutton, key: i32, extra_time: i32) {
+    let Some((slot, mask)) = held_key(key) else {
+        return;
+    };
+    if btn.down[slot] & mask != 0 {
         return;
     }
+    btn.down[slot] |= mask;
     if !btn.active {
         btn.downtime = extra_time;
         btn.active = true;
@@ -52,14 +62,14 @@ pub fn in_key_down(btn: &mut Kbutton, key: i32, extra_time: i32) {
 }
 
 pub fn in_key_up(btn: &mut Kbutton, uptime: i32, key: i32, frame_msec: u32) {
-    if btn.down[0] == key {
-        btn.down[0] = 0;
-    } else if btn.down[1] == key {
-        btn.down[1] = 0;
-    } else {
+    let Some((slot, mask)) = held_key(key) else {
+        return;
+    };
+    if btn.down[slot] & mask == 0 {
         return;
     }
-    if btn.down[0] != 0 || btn.down[1] != 0 {
+    btn.down[slot] &= !mask;
+    if btn.down.iter().any(|bits| *bits != 0) {
         return;
     }
     if btn.active {
@@ -133,6 +143,7 @@ pub struct KbuttonSet {
     pub sprint: Kbutton,
     pub scores: Kbutton,
     pub talk: Kbutton,
+    pub stance: Kbutton,
 }
 
 impl KbuttonSet {
@@ -200,6 +211,7 @@ impl KbuttonSet {
     }
 
     pub fn clear_was_pressed(&mut self) {
+        self.stance.was_pressed = false;
         self.attack.was_pressed = false;
         self.melee.was_pressed = false;
         self.frag.was_pressed = false;
@@ -302,7 +314,13 @@ pub fn input_cmd(client: &mut ClientInput, cmd_id: u32, key: i32, now_msec: i32,
                 client.action_slots.push(((cmd_id - 15) / 2) as usize);
             }
         }
-        23 | 24 => stance_button(client, pair_down(cmd_id), now_msec),
+        23 | 24 => {
+            let was_active = client.kb.stance.active;
+            apply_pair(&mut client.kb.stance, cmd_id, key, now_msec, frame_msec);
+            if was_active != client.kb.stance.active {
+                stance_button(client, client.kb.stance.active, now_msec);
+            }
+        }
         25 | 26 => {
             apply_pair(&mut client.kb.gostand, cmd_id, key, now_msec, frame_msec);
         }
@@ -556,6 +574,7 @@ pub fn create_cmd(input: &CreateCmdInput) -> UserCmd {
         melee_charge_dist: 0,
         selected_location: [0; 3],
         remote_control: [0; 2],
+        gun_angle_offset: [0.0; 2],
     }
 }
 

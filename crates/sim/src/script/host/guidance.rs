@@ -6,9 +6,6 @@ use crate::script::{NativeRegistry, Runtime, Value};
 use bevy_ecs::prelude::World;
 use glam::Vec3;
 
-const TOP_ATTACK_HEIGHT: f32 = 2000.0;
-const TOP_ATTACK_DIVE_RANGE: f32 = 1500.0;
-const TURN_RATE_DEG_PER_S: f32 = 240.0;
 pub(crate) const ATTRACTOR_SLOTS: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,39 +22,61 @@ pub(crate) struct Attractor {
     max_dist: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Aim {
-    Entity { object: u64, offset: [f32; 3] },
-    Point([f32; 3]),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Guide {
-    aim: Option<Aim>,
-    top: bool,
-    diving: bool,
-}
-
-fn missile(world: &World, receiver: &Value) -> Result<u64, String> {
-    match world.resource::<Runtime>().entity(receiver) {
-        Some((object, e)) if matches!(e.kind, EntityKind::Missile(_)) => Ok(object),
-        _ => Err("receiver is not a missile".into()),
+pub(crate) fn target(
+    world: &mut World,
+    value: &Value,
+    offset: [f32; 3],
+) -> Result<crate::MissileTarget, String> {
+    if let Value::Vector(point) = value {
+        return Ok(crate::MissileTarget::Point(*point));
     }
+    let runtime = world.resource::<Runtime>();
+    let (_, entity) = runtime
+        .entity(value)
+        .filter(|(id, _)| runtime.live(id))
+        .ok_or("target is not an entity or vector")?;
+    let number = entity.number;
+    let client = runtime.player_client_of(value);
+    let frame = FrameWorld::from_world(world);
+    if let Some(client) = client {
+        let client = crate::ClientId(client);
+        let life = frame
+            .client_meta(client)
+            .ok_or("target player disconnected")?
+            .life_sequence;
+        return Ok(crate::MissileTarget::Player {
+            client,
+            life,
+            offset,
+        });
+    }
+    let entity = frame
+        .entity_kernel()
+        .current_ref(number)
+        .map_err(|_| "target entity is not live")?;
+    Ok(crate::MissileTarget::Entity { entity, offset })
 }
 
 fn guide(
     world: &mut World,
     receiver: &Value,
-    edit: impl FnOnce(&mut Guide),
+    edit: impl FnOnce(&mut crate::MissileGuide),
 ) -> Result<Value, String> {
-    let object = missile(world, receiver)?;
-    let mut runtime = world.resource_mut::<Runtime>();
-    let guide = runtime.engine.guides.entry(object).or_insert(Guide {
-        aim: None,
-        top: false,
-        diving: false,
-    });
-    edit(guide);
+    let runtime = world.resource::<Runtime>();
+    let (_, entity) = runtime
+        .entity(receiver)
+        .filter(|(id, _)| runtime.live(id))
+        .ok_or("receiver is not a missile")?;
+    let EntityKind::Missile(id) = entity.kind else {
+        return Err("receiver is not a missile".into());
+    };
+    let number = entity.number;
+    let mut frame = FrameWorld::from_world(world);
+    let missile = frame
+        .projectile_mut_by_number(number)
+        .filter(|p| p.id == id && p.live)
+        .ok_or("missile is not live")?;
+    edit(&mut missile.guide);
     Ok(Value::Undefined)
 }
 
@@ -116,18 +135,23 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         Ok(Value::Undefined)
     });
     registry.register(Method, "missile_settargetent", |world, receiver, args| {
-        let object = super::natives::engine::entity_id(world, arg(args, 0)?)?;
+        super::natives::engine::entity_id(world, arg(args, 0)?)?;
         let offset = optional(args, 1, vector)?.unwrap_or([0.0; 3]);
+        let aim = target(world, arg(args, 0)?, offset)?;
         guide(world, receiver, |g| {
-            g.aim = Some(Aim::Entity { object, offset })
+            g.target = Some(aim);
+            g.passed = false;
         })
     });
     registry.register(Method, "missile_settargetpos", |world, receiver, args| {
         let point = vector(args, 0)?;
-        guide(world, receiver, |g| g.aim = Some(Aim::Point(point)))
+        guide(world, receiver, |g| {
+            g.target = Some(crate::MissileTarget::Point(point));
+            g.passed = false;
+        })
     });
     registry.register(Method, "missile_cleartarget", |world, receiver, _| {
-        guide(world, receiver, |g| g.aim = None)
+        guide(world, receiver, |g| g.target = None)
     });
     registry.register(
         Method,
@@ -135,46 +159,21 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         |world, receiver, _| {
             guide(world, receiver, |g| {
                 g.top = false;
-                g.diving = false;
+                g.stage = 0;
+                g.passed = false;
             })
         },
     );
     registry.register(Method, "missile_setflightmodetop", |world, receiver, _| {
         guide(world, receiver, |g| {
             g.top = true;
-            g.diving = false;
+            g.stage = 0;
+            g.passed = false;
         })
     });
 }
 
-fn aim_point(world: &mut World, aim: Aim) -> Option<[f32; 3]> {
-    match aim {
-        Aim::Point(point) => Some(point),
-        Aim::Entity { object, offset } => {
-            if !world.resource::<Runtime>().live(&object) {
-                return None;
-            }
-            match super::players::entity_field(world, object, "origin") {
-                Value::Vector(o) => Some([o[0] + offset[0], o[1] + offset[1], o[2] + offset[2]]),
-                _ => None,
-            }
-        }
-    }
-}
-
-pub(crate) fn turn_toward(current: Vec3, wanted: Vec3, max_radians: f32) -> Vec3 {
-    let angle = current.angle_between(wanted);
-    if angle <= max_radians || angle.is_nan() {
-        return wanted;
-    }
-    let axis = current.cross(wanted);
-    let axis = if axis.length_squared() < 1e-8 {
-        current.any_orthonormal_vector()
-    } else {
-        axis.normalize()
-    };
-    glam::Quat::from_axis_angle(axis, max_radians) * current
-}
+pub(crate) use crate::missile_guidance::turn_toward;
 
 fn attract(world: &mut World, now: i32) {
     let slots: Vec<Attractor> = world
@@ -204,12 +203,7 @@ fn attract(world: &mut World, now: i32) {
         if !projectile.live {
             continue;
         }
-        let runtime = world.resource::<Runtime>();
-        let steered = runtime
-            .missiles
-            .get(&projectile.id)
-            .and_then(|object| runtime.engine.guides.get(object))
-            .is_some_and(|guide| guide.aim.is_some());
+        let steered = projectile.guide.target.is_some();
         let mut frame = FrameWorld::from_world(world);
         let rocket = frame
             .combat_facts_for(projectile.weapon)
@@ -281,86 +275,4 @@ fn attract(world: &mut World, now: i32) {
 pub(crate) fn advance(world: &mut World) {
     let now = crate::level_time_ms(world.resource::<crate::step::StepRequest>().tick);
     attract(world, now);
-    let guides: Vec<(u64, Guide)> = world
-        .resource::<Runtime>()
-        .engine
-        .guides
-        .iter()
-        .map(|(object, guide)| (*object, *guide))
-        .collect();
-    for (object, mut guide) in guides {
-        let found = world
-            .resource::<Runtime>()
-            .entities
-            .get(&object)
-            .and_then(|e| match e.kind {
-                EntityKind::Missile(id) => Some((id, e.number)),
-                _ => None,
-            });
-        let Some((id, number)) = found else {
-            world
-                .resource_mut::<Runtime>()
-                .engine
-                .guides
-                .remove(&object);
-            continue;
-        };
-        let live = FrameWorld::from_world(world)
-            .projectile_by_number(number)
-            .filter(|p| p.id == id && p.live);
-        let Some(projectile) = live else {
-            world
-                .resource_mut::<Runtime>()
-                .engine
-                .guides
-                .remove(&object);
-            continue;
-        };
-        let Some(target) = guide.aim.and_then(|aim| aim_point(world, aim)) else {
-            continue;
-        };
-        let origin = Vec3::from_array(projectile.origin_at(now));
-        let velocity = Vec3::from_array(projectile.velocity);
-        let speed = velocity.length();
-        if speed < 1.0 {
-            continue;
-        }
-        let target = Vec3::from_array(target);
-        let flat = (target - origin).truncate().length();
-        let mut goal = target;
-        if guide.top && !guide.diving {
-            if flat <= TOP_ATTACK_DIVE_RANGE || origin.z >= target.z + TOP_ATTACK_HEIGHT {
-                guide.diving = true;
-            } else {
-                goal = Vec3::new(target.x, target.y, target.z + TOP_ATTACK_HEIGHT);
-            }
-        }
-        let Some(wanted) = (goal - origin).try_normalize() else {
-            continue;
-        };
-        let seconds = crate::MATCH_TICK_MS as f32 * 0.001;
-        let dir = turn_toward(
-            velocity / speed,
-            wanted,
-            TURN_RATE_DEG_PER_S.to_radians() * seconds,
-        );
-        let delta = entity_iw4::truncated_tr_delta((dir * speed).to_array());
-        let mut frame = FrameWorld::from_world(world);
-        if let Some(projectile) = frame.projectile_mut_by_number(number) {
-            projectile.velocity = delta;
-            projectile.pos = entity_iw4::Trajectory {
-                tr_time: now,
-                tr_type: entity_iw4::TR_LINEAR,
-                tr_duration: 0,
-                tr_delta: delta,
-                tr_base: origin.to_array(),
-            };
-            projectile.apos = entity_iw4::fire_missile_apos(dir.to_array());
-        }
-        world
-            .resource_mut::<Runtime>()
-            .engine
-            .guides
-            .insert(object, guide);
-    }
 }

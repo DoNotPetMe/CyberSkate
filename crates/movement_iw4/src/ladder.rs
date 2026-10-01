@@ -1,8 +1,4 @@
-use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd};
-
-pub const PMF_LADDER: u32 = 0x8;
-
-pub const PMF_LADDER_FALL: u32 = 0x1000;
+use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd, pm_flags};
 
 pub const LADDER_JUMP_BLOCK_MS: i32 = 300;
 
@@ -42,13 +38,13 @@ pub struct CheckLadderContext {
 }
 
 pub fn clear_ladder_flag(ps: &mut PlayerState) {
-    if (ps.pm_flags & PMF_LADDER) != 0 {
-        ps.pm_flags = (ps.pm_flags & !PMF_LADDER) | PMF_LADDER_FALL;
+    if (ps.pm_flags & pm_flags::LADDER) != 0 {
+        ps.pm_flags = (ps.pm_flags & !pm_flags::LADDER) | pm_flags::LADDER_FALL;
     }
 }
 
 pub fn set_ladder_flag(ps: &mut PlayerState) {
-    ps.pm_flags |= PMF_LADDER;
+    ps.pm_flags |= pm_flags::LADDER;
 }
 
 fn ladder_stance_blocks_attach(ps: &PlayerState) -> bool {
@@ -69,17 +65,19 @@ pub fn check_ladder_move(
     ps: &mut PlayerState,
     context: CheckLadderContext,
     backend: &mut impl LadderAttachBackend,
-) {
+) -> bool {
     if context.walking {
-        ps.pm_flags &= !PMF_LADDER_FALL;
+        ps.pm_flags &= !pm_flags::LADDER_FALL;
     }
 
-    let early_ok = ps.pm_time == 0 || (ps.pm_flags & PMF_LADDER) != 0 || (ps.pm_flags & 0x180) == 0;
+    let early_ok =
+        ps.pm_time == 0 || (ps.pm_flags & pm_flags::LADDER) != 0 || (ps.pm_flags & 0x180) == 0;
     if !early_ok {
-        return;
+        return false;
     }
 
-    let fell_off_in_air = (ps.pm_flags & PMF_LADDER) != 0 && ps.ground_entity_num == ENTITYNUM_NONE;
+    let fell_off_in_air =
+        (ps.pm_flags & pm_flags::LADDER) != 0 && ps.ground_entity_num == ENTITYNUM_NONE;
 
     let (check_dir, tracedist) = if fell_off_in_air {
         (
@@ -114,32 +112,32 @@ pub fn check_ladder_move(
     if ps.pm_type >= 8 {
         ps.ground_entity_num = ENTITYNUM_NONE;
         clear_ladder_flag(ps);
-        return;
+        return false;
     }
 
-    if (ps.pm_flags & PMF_LADDER_FALL) != 0
+    if (ps.pm_flags & pm_flags::LADDER_FALL) != 0
         || ladder_stance_blocks_attach(ps)
         || context.server_time.wrapping_sub(ps.jump_time) < LADDER_JUMP_BLOCK_MS
     {
         clear_ladder_flag(ps);
-        return;
+        return false;
     }
 
     let Some(hit) = backend.ladder_trace(ps.origin, check_dir, tracedist) else {
         clear_ladder_flag(ps);
-        return;
+        return fell_off_in_air;
     };
     if hit.fraction >= 1.0
         || (hit.surface_flags & SURF_LADDER) == 0
         || (context.walking && context.forwardmove <= 0)
     {
         clear_ladder_flag(ps);
-        return;
+        return fell_off_in_air;
     }
 
-    if (ps.pm_flags & PMF_LADDER) != 0 {
+    if (ps.pm_flags & pm_flags::LADDER) != 0 {
         set_ladder_flag(ps);
-        return;
+        return false;
     }
 
     ps.v_ladder_vec = hit.normal;
@@ -150,13 +148,14 @@ pub fn check_ladder_move(
     ];
     let Some(hit2) = backend.ladder_trace(ps.origin, recheck, tracedist) else {
         clear_ladder_flag(ps);
-        return;
+        return fell_off_in_air;
     };
     if hit2.fraction < 1.0 && (hit2.surface_flags & SURF_LADDER) != 0 {
         set_ladder_flag(ps);
+        false
     } else {
         clear_ladder_flag(ps);
-        let _ = fell_off_in_air;
+        fell_off_in_air
     }
 }
 
@@ -308,7 +307,7 @@ fn ladder_cmd_scale(ps: &PlayerState, cmd: &UserCmd, spectate_speed_scale: f32) 
         return 0.0;
     }
     let mut scale = (ps.speed as f32 * largest) / (magnitude * 127.0);
-    if (ps.pm_flags & 0x40) != 0 || ps.leanf != 0.0 {
+    if (ps.pm_flags & pm_flags::WALKING) != 0 || ps.leanf != 0.0 {
         scale *= 0.4;
     }
     scale *= match ps.pm_type {

@@ -122,10 +122,7 @@ impl IwdIndex {
             .map_err(|error| format!("cannot read IWD directory {}: {error}", directory.display()))?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("iwd"))
-            })
+            .filter(|path| is_iwd_archive(path))
             .collect::<Vec<_>>();
         archives.sort();
 
@@ -169,6 +166,17 @@ impl IwdIndex {
             archives: archives.len(),
         })
     }
+}
+
+/// macOS writes an AppleDouble `._<name>` beside every file it copies onto
+/// exFAT, FAT or a network share. `._iw_00.iwd` is not a zip, and one of them
+/// in `main/` would fail the whole index.
+fn is_iwd_archive(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("iwd"))
+        && !path
+            .file_name()
+            .is_some_and(|name| name.as_encoded_bytes().starts_with(b"._"))
 }
 
 fn index_image_entries(path: &Path) -> Result<Vec<(String, IwdFile)>, String> {
@@ -304,7 +312,9 @@ fn read_pooled_entry(
     let inflate_at = std::time::Instant::now();
     let mut entry = archive
         .by_name(entry_name)
-        .map_err(|error| format!("cannot read {entry_name}: {error}"))?;
+        .map_err(|error| {
+            format!("cannot open IWD entry {entry_name} in {archive_path:?}: {error}")
+        })?;
     let want = limit.map_or(entry.size() as usize, |limit| {
         limit.min(entry.size() as usize)
     });
@@ -313,7 +323,9 @@ fn read_pooled_entry(
         Some(limit) => entry.take(limit as u64).read_to_end(&mut bytes),
         None => entry.read_to_end(&mut bytes),
     };
-    read.map_err(|error| format!("cannot read {entry_name}: {error}"))?;
+    read.map_err(|error| {
+        format!("cannot read IWD entry {entry_name} in {archive_path:?}: {error}")
+    })?;
     IWD_INFLATE_NS.fetch_add(inflate_at.elapsed().as_nanos() as u64, Ordering::Relaxed);
     Ok(bytes)
 }
@@ -397,10 +409,7 @@ pub fn read_iwd_named(games_root: &Path, want: &str) -> Option<Vec<u8>> {
                 stack.push(path);
                 continue;
             }
-            if !path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("iwd"))
-            {
+            if !is_iwd_archive(&path) {
                 continue;
             }
             let Ok(file) = std::fs::File::open(&path) else {
@@ -470,10 +479,7 @@ impl IwdSoundIndex {
             .map_err(|e| format!("cannot read {}: {e}", directory.display()))?
             .filter_map(std::result::Result::ok)
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("iwd"))
-            })
+            .filter(|p| is_iwd_archive(p))
             .collect::<Vec<_>>();
         archives.sort();
 

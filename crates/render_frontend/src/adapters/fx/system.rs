@@ -2256,9 +2256,11 @@ fn fire_weapon(
             weapons
                 .0
                 .weapon_sound_alias(weapon, asset_game::WeaponSoundSlot::FireLast, &bank.0),
-            weapons
-                .0
-                .weapon_sound_alias(weapon, asset_game::WeaponSoundSlot::FireLastPlayer, &bank.0),
+            weapons.0.weapon_sound_alias(
+                weapon,
+                asset_game::WeaponSoundSlot::FireLastPlayer,
+                &bank.0,
+            ),
         )
         .map(|alias| (alias, player_view))
     });
@@ -2391,7 +2393,7 @@ fn tick_missile_present_state(
     elem_infos.0.sync(catalog);
     let mut live = Vec::with_capacity(occupancy.rows.len());
     for row in &occupancy.rows {
-        let Some(entnum) = row.id else {
+        let Some(entnum) = row.entnum else {
             bolts.predicted_rows_skipped = bolts.predicted_rows_skipped.saturating_add(1);
             continue;
         };
@@ -2399,24 +2401,28 @@ fn tick_missile_present_state(
         let (want_trail, want_beacon, want_ignition) = {
             let state = bolts.rows.entry(entnum).or_insert(
                 crate::adapters::anim::missile::MissileBoltRow {
+                    projectile: row.id,
                     weapon: row.weapon,
                     trail_played: false,
                     beacon_played: false,
                     ignition_played: false,
+                    ignition_fx_played: false,
                 },
             );
-            if state.weapon != row.weapon {
+            if state.weapon != row.weapon || state.projectile != row.id {
                 *state = crate::adapters::anim::missile::MissileBoltRow {
+                    projectile: row.id,
                     weapon: row.weapon,
                     trail_played: false,
                     beacon_played: false,
                     ignition_played: false,
+                    ignition_fx_played: false,
                 };
             }
             (
-                !state.trail_played,
+                row.ignited && !state.trail_played,
                 !state.beacon_played,
-                !state.ignition_played,
+                row.ignited && !state.ignition_played,
             )
         };
         let mark = |bolts: &mut crate::adapters::anim::missile::MissileBoltState,
@@ -2471,12 +2477,14 @@ fn tick_missile_present_state(
             }
         }
 
-        if let Some(name) = weapons.proj_ignition_of(row.weapon)
+        if row.ignited
+            && !bolts.rows[&entnum].ignition_fx_played
+            && let Some(name) = weapons.proj_ignition_of(row.weapon)
             && let Some(target) =
                 missile_bolt_target(poses.as_deref(), meshes, row.namespace, &row.name, entnum)
         {
             let mut played = 0;
-            if !try_play_weapon_fx_bolted(
+            if try_play_weapon_fx_bolted(
                 &mut host.0,
                 catalog,
                 &mut elem_infos.0,
@@ -2485,6 +2493,8 @@ fn tick_missile_present_state(
                 &mut played,
                 fx_world.view().as_ref().map(|s| s as &dyn FxScene),
             ) {
+                mark(&mut bolts, entnum, |state| state.ignition_fx_played = true);
+            } else {
                 bolts.play_gaps = bolts.play_gaps.saturating_add(1);
             }
         }
