@@ -653,7 +653,7 @@ fn handle_input(
         return;
     }
     if pressed.escape {
-        match runner.menus.stack.last().map(|m| m.name.clone()) {
+        match runner.menus.top_captured() {
             Some(top) => runner.escape(&top),
             None if !runner.world.in_game => runner.open("iw4l_main"),
             None => {
@@ -676,7 +676,7 @@ fn handle_input(
         }
         return;
     }
-    let Some(top) = runner.menus.stack.last().map(|m| m.name.clone()) else {
+    let Some(top) = runner.menus.top_captured() else {
         return;
     };
 
@@ -688,14 +688,14 @@ fn handle_input(
     }
     if pressed.left || pressed.right {
         let step = if pressed.left { -1 } else { 1 };
-        let focus = runner.menus.stack.last().and_then(|m| m.focus);
+        let focus = runner.menus.focused_item_in(&top);
         if !focus.is_some_and(|focus| runner.adjust(&top, focus, step)) {
             runner.focus_nav(&top, step, 0);
         }
         return;
     }
     if pressed.enter {
-        if let Some(focus) = runner.menus.stack.last().and_then(|m| m.focus) {
+        if let Some(focus) = runner.menus.focused_item_in(&top) {
             runner.activate(&top, focus, true);
         }
         return;
@@ -723,7 +723,7 @@ fn handle_input(
     let Some(def) = runner.catalog.get(&top) else {
         return;
     };
-    let Some(open) = runner.menus.stack.last() else {
+    let Some(open) = runner.menus.stack.iter().find(|m| m.name == top) else {
         return;
     };
     let painted = painted_def(def, open);

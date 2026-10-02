@@ -455,10 +455,18 @@ fn update(
         let blocks = &world.registries.blocks;
         let (min_y, height) = (chunk.min_y(), chunk.height());
         let mut ids = vec![0u16; (height * 256) as usize];
+        // Runs of one state (air, stone) skip the map.
+        let mut last = None;
         for y in 0..height {
             for z in 0..16usize {
                 for x in 0..16usize {
                     let state = chunk.block(x, min_y + y, z);
+                    if let Some((last_state, id)) = last
+                        && last_state == state
+                    {
+                        ids[((y as usize * 16) + z) * 16 + x] = id;
+                        continue;
+                    }
                     let id = *shapes.entry(state).or_insert_with(|| {
                         let boxes = blocks.collision_boxes(state);
                         if boxes.is_empty() {
@@ -474,6 +482,7 @@ fn update(
                         shape_ids.insert(key, id);
                         id
                     });
+                    last = Some((state, id));
                     ids[((y as usize * 16) + z) * 16 + x] = id;
                 }
             }
@@ -1031,13 +1040,20 @@ fn update(
         let n = LIGHT_VOLUME;
         let index = |x: i32, y: i32, z: i32| (((y * n + z) * n + x) * 2) as usize;
         let mut raw = vec![0u8; (n * n * n * 2) as usize];
-        for y in 0..n {
-            for z in 0..n {
-                for x in 0..n {
-                    let pos = (corner[0] + x, corner[1] + y, corner[2] + z);
+        for z in 0..n {
+            for x in 0..n {
+                let (bx, bz) = (corner[0] + x, corner[2] + z);
+                // One column lookup for the whole stack, not two per cell.
+                let column = light.chunk_column((bx >> 4, bz >> 4));
+                for y in 0..n {
+                    let pos = (bx, corner[1] + y, bz);
                     let at = index(x, y, z);
-                    raw[at] = light.get(pos);
-                    raw[at + 1] = light.get_block(pos);
+                    let (sky, block) = match column {
+                        Some(column) => (column.get(pos), column.get_block(pos)),
+                        None => (light.get(pos), light.get_block(pos)),
+                    };
+                    raw[at] = sky;
+                    raw[at + 1] = block;
                 }
             }
         }

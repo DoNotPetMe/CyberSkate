@@ -14,6 +14,9 @@ pub(crate) struct OpenMenu {
     pub(crate) focus: Option<usize>,
     pub(crate) hover: Option<usize>,
     pub(crate) items: Vec<ItemState>,
+    /// Takes the keyboard, mouse and pad from gameplay. Overlays such as the
+    /// grenade dirt effect have nothing to select, so play goes on under them.
+    pub(crate) captures: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -43,7 +46,11 @@ pub struct ScriptMenus {
 
 impl ScriptMenus {
     pub fn captures_input(&self) -> bool {
-        !self.stack.is_empty()
+        self.stack.iter().any(|menu| menu.captures)
+    }
+
+    pub(crate) fn top_captured(&self) -> Option<String> {
+        self.stack.iter().rev().find(|menu| menu.captures).map(|menu| menu.name.clone())
     }
 
     pub fn open_names(&self) -> Vec<String> {
