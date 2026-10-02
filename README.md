@@ -13,7 +13,7 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 
 - Minecraft's own world generation, with its day/night cycle, sky, clouds and lighting. The lighting also falls on your gun.
 - Vanilla mobs, both passive and hostile. You can shoot them and they fight back.
-- Shoot blocks to break them. Harder blocks take more bullets, scaled by each gun's real MW2 damage and range. Grenades blow up like TNT.
+- Shoot blocks to break them. Harder blocks take more bullets, scaled by each gun's real MW2 damage and range. Knife them too. Grenades blow up like TNT.
 - Broken blocks drop items that you pick up.
 - A Minecraft inventory and hotbar restyled in MW2's look. Your guns sit in the hotbar as items, and your MW2 character stands in the inventory window.
 - Hold a block to place it. With an empty hand you punch and mine with your bare MW2 hands.
@@ -64,7 +64,6 @@ Plug in a controller and play; the game follows whichever controller you last to
 
 ## Known issues
 
-- If you die in skater mode, bodies pile up.
 - The skateboard is invisible on some maps.
 
 ## Credits
