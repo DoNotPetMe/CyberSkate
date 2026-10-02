@@ -402,7 +402,10 @@ fn sync_remote_bodies(
             rotation: Quat::from_rotation_z(yaw.to_radians()),
             scale: Vec3::ONE,
         };
-        if skate.active && !skate.bones.is_empty() && client.0 == skate.client {
+        // A corpse belongs to its client too; only the living body rides.
+        let is_corpse = runtime.next_state.e_type == ET_PLAYER_CORPSE
+            || runtime.pose_e_type == ET_PLAYER_CORPSE as u8;
+        if skate.active && !skate.bones.is_empty() && client.0 == skate.client && !is_corpse {
             pose = Transform::from_matrix(skate.root);
         }
         if let Some(puppet) = puppet.as_ref().filter(|p| p.active && client.0 == p.client) {
@@ -852,9 +855,11 @@ impl<'a> RemotePoseFrame<'a> {
                 .expect("composed");
             validate_remote_tracks(dobj, clips.as_ref(), body, &model_set.body_name)?;
 
+            // A corpse keeps its client's key; only the living body skates.
             let skating = self.skate.active
                 && !self.skate.bones.is_empty()
-                && persist_key == self.skate.client;
+                && persist_key == self.skate.client
+                && !is_corpse;
             let world = if skating {
                 crate::skate::rig::pose(dobj, self.skate)
             } else {

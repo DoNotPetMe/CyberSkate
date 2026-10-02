@@ -233,8 +233,12 @@ fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result
                                     let d = (at - centre) / sim::voxel::BLOCK;
                                     d.truncate().length() > BLOCK_RECENTRE || d.z.abs() > BLOCK_DEPTH as f32 * 0.5
                                 });
-                                let changed = blocks.is_some_and(|(revision, _)| revision != sim::voxel::revision())
-                                    && requested.elapsed().as_secs_f32() > 0.25;
+                                // Only changes that reach the blocks it covers: chunks
+                                // stream in and out far away the whole time.
+                                let changed = requested.elapsed().as_secs_f32() > 0.25
+                                    && blocks.is_some_and(|(revision, centre)| {
+                                        sim::voxel::changed_near(revision, centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH)
+                                    });
                                 if (far || changed) && build_send.send(at).is_ok() {
                                     building = true;
                                     requested = std::time::Instant::now();

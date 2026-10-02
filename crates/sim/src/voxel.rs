@@ -41,8 +41,62 @@ static WORLD: RwLock<Option<VoxelWorld>> = RwLock::new(None);
 /// Bumped whenever the block world's collision changes.
 static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The block box each recent revision touched, oldest first, so a reader
+/// can tell whether the changes since its own revision reach a region.
+static CHANGES: std::sync::Mutex<std::collections::VecDeque<(u64, [i32; 3], [i32; 3])>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+const CHANGE_LOG: usize = 256;
+const EVERYWHERE: ([i32; 3], [i32; 3]) = ([i32::MIN; 3], [i32::MAX; 3]);
+
 fn bump() {
-    REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    bump_region(EVERYWHERE.0, EVERYWHERE.1);
+}
+
+fn bump_region(min: [i32; 3], max: [i32; 3]) {
+    let Ok(mut log) = CHANGES.lock() else {
+        REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return;
+    };
+    let revision = REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    log.push_back((revision, min, max));
+    while log.len() > CHANGE_LOG {
+        log.pop_front();
+    }
+}
+
+/// A chunk column's block box.
+fn chunk_region(x: i32, z: i32) -> ([i32; 3], [i32; 3]) {
+    ([x * 16, i32::MIN, z * 16], [x * 16 + 15, i32::MAX, z * 16 + 15])
+}
+
+/// Whether any change after `since` touched the blocks within `radius`
+/// across and `depth` up or down of map point `centre`, or a block next to
+/// them (a neighbour decides which faces show). When the log no longer
+/// reaches back to `since`, it answers yes.
+pub fn changed_near(since: u64, centre: [f32; 3], radius: i32, depth: i32) -> bool {
+    if revision() <= since {
+        return false;
+    }
+    let origin = match WORLD.read() {
+        Ok(world) => match world.as_ref() {
+            Some(world) => world.origin,
+            None => return true,
+        },
+        Err(_) => return true,
+    };
+    let Ok(log) = CHANGES.lock() else {
+        return true;
+    };
+    if log.front().is_none_or(|(revision, ..)| *revision > since + 1) {
+        return true;
+    }
+    let c = to_block(origin, centre);
+    let (cx, cy, cz) = (c[0].floor() as i32, c[1].floor() as i32, c[2].floor() as i32);
+    let lo = [cx - radius - 1, cy - depth - 1, cz - radius - 1];
+    let hi = [cx + radius + 1, cy + depth + 1, cz + radius + 1];
+    log.iter()
+        .filter(|(revision, ..)| *revision > since)
+        .any(|(_, min, max)| (0..3).all(|i| min[i] <= hi[i] && max[i] >= lo[i]))
 }
 
 /// Changes with every change to the block world's collision.
@@ -247,7 +301,7 @@ pub fn set_block_shape(x: i32, y: i32, z: i32, shape: u16) {
             let index = ((ly * 16 + (z & 15)) * 16 + (x & 15)) as usize;
             if let Some(slot) = chunk.shapes.get_mut(index) {
                 *slot = shape;
-                bump();
+                bump_region([x, y, z], [x, y, z]);
             }
         }
     }
@@ -291,7 +345,8 @@ pub fn set_chunk(x: i32, z: i32, chunk: VoxelChunk) {
     {
         world.chunks.insert((x, z), chunk);
     }
-    bump();
+    let (min, max) = chunk_region(x, z);
+    bump_region(min, max);
 }
 
 pub fn remove_chunk(x: i32, z: i32) {
@@ -300,7 +355,8 @@ pub fn remove_chunk(x: i32, z: i32) {
     {
         world.chunks.remove(&(x, z));
     }
-    bump();
+    let (min, max) = chunk_region(x, z);
+    bump_region(min, max);
 }
 
 /// The faces of the block world's collision boxes within `radius` blocks
