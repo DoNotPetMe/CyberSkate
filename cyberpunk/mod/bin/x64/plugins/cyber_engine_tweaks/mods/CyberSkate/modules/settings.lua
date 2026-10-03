@@ -14,6 +14,11 @@ local defaults = {
     headBob = true,
     -- Click both sticks in to get on or off the board.
     padToggle = true,
+    -- Without a controller, skate on the keyboard (see docs/CYBERPUNK.md).
+    keyboard = true,
+    -- Cars are solid and rideable. Traffic that drives off leaves its shape
+    -- behind until the next scan, about a second.
+    solidVehicles = true,
     showHud = true,
     -- Restrictions held on V while skating, so the controller only skates.
     restrictions = {
@@ -35,6 +40,10 @@ local defaults = {
         ringRays = 64,
         ringHeight = 2.0,
         ringRange = 12.0,
+        -- Knee-height casts for poles and bollards the grid steps over.
+        lowRingRays = 96,
+        lowRingHeight = 0.45,
+        lowRingRange = 8.0,
         -- A new scan starts once the skater is this far from the last
         -- scan's centre, or after this many seconds.
         recenter = 4.0,

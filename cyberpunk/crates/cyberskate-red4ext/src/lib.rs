@@ -8,7 +8,8 @@
 #![allow(non_snake_case)]
 
 use bevy::math::Vec3;
-use cyberskate::{Runtime, Scan, Status};
+use cyberskate::keyboard::Keys;
+use cyberskate::{InputSource, Runtime, Scan, Status};
 use red4ext_rs::{
     Exportable, GlobalExport, Plugin, PluginOps, SemVer, U16CStr, export_plugin_symbols, exports,
     global, wcstr,
@@ -40,6 +41,10 @@ impl Plugin for CyberSkate {
             GlobalExport(global!(c"CyberSkate_Controller", controller)),
             GlobalExport(global!(c"CyberSkate_Collision", collision)),
             GlobalExport(global!(c"CyberSkate_PadButtons", pad_buttons)),
+            GlobalExport(global!(c"CyberSkate_InputSource", input_source)),
+            GlobalExport(global!(c"CyberSkate_SetKeyboard", set_keyboard)),
+            GlobalExport(global!(c"CyberSkate_Score", score)),
+            GlobalExport(global!(c"CyberSkate_Trick", trick)),
         ]
     }
 
@@ -81,6 +86,49 @@ unsafe extern "system" {
 #[link(name = "xinput")]
 unsafe extern "system" {
     fn XInputGetState(index: u32, state: *mut [u32; 4]) -> u32;
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetAsyncKeyState(key: i32) -> i16;
+    fn GetForegroundWindow() -> isize;
+    fn GetWindowThreadProcessId(window: isize, process: *mut u32) -> u32;
+}
+
+/// The keyboard layout of the virtual pad, while the game has focus.
+fn read_keys() -> Option<Keys> {
+    // SAFETY: plain Win32 queries with no retained pointers.
+    let focused = unsafe {
+        let window = GetForegroundWindow();
+        let mut process = 0;
+        window != 0
+            && GetWindowThreadProcessId(window, &mut process) != 0
+            && process == std::process::id()
+    };
+    if !focused {
+        return None;
+    }
+    let down = |key: i32| unsafe { GetAsyncKeyState(key) } as u16 & 0x8000 != 0;
+    Some(Keys {
+        left_up: down(0x57),       // W
+        left_down: down(0x53),     // S
+        left_left: down(0x41),     // A
+        left_right: down(0x44),    // D
+        flick_up: down(0x26),      // Up
+        flick_down: down(0x28),    // Down
+        flick_left: down(0x25),    // Left
+        flick_right: down(0x27),   // Right
+        a: down(0x20),             // Space
+        b: down(0xA2),             // Left Ctrl
+        x: down(0xA0),             // Left Shift
+        y: down(0x46),             // F
+        left_trigger: down(0x51),  // Q
+        right_trigger: down(0x45), // E
+        left_bumper: down(0x5A),   // Z
+        right_bumper: down(0x43),  // C
+        start: down(0x0D),         // Enter
+        back: down(0x08),          // Backspace
+    })
 }
 
 /// `skate-data/assets` beside this DLL, where the setup script converts the
@@ -136,7 +184,7 @@ fn start(assets: String) -> bool {
                 root.display()
             ));
         }
-        match Runtime::start(&root) {
+        match Runtime::start(&root, Some(Box::new(read_keys))) {
             Ok(started) => {
                 CyberSkate::env().info(format!("CyberSkate: loading {}", root.display()));
                 *slot = Some(started);
@@ -189,9 +237,15 @@ fn scan_breaks(header: Vec<f32>, ground: Vec<f32>) -> Vec<f32> {
     })
 }
 
-fn submit_scan(header: Vec<f32>, ground: Vec<f32>, edges: Vec<f32>, walls: Vec<f32>) -> bool {
+fn submit_scan(
+    header: Vec<f32>,
+    ground: Vec<f32>,
+    edges: Vec<f32>,
+    walls: Vec<f32>,
+    posts: Vec<f32>,
+) -> bool {
     guarded(false, "SubmitScan", || {
-        let scan = match Scan::parse(&header, &ground, &edges, &walls) {
+        let scan = match Scan::parse(&header, &ground, &edges, &walls, &posts) {
             Ok(scan) => scan,
             Err(e) => {
                 CyberSkate::env().warn(format!("CyberSkate: scan refused: {e}"));
@@ -252,10 +306,60 @@ fn state() -> String {
     })
 }
 
-/// Whether an XInput controller answered on the last step.
+/// Whether anything (a controller or the keyboard) drove the last step.
 fn controller() -> bool {
     guarded(false, "Controller", || {
-        runtime().as_ref().is_some_and(Runtime::controller)
+        runtime()
+            .as_ref()
+            .is_some_and(|r| r.input() != InputSource::None)
+    })
+}
+
+/// 0 nothing, 1 an XInput controller, 2 the keyboard.
+fn input_source() -> i32 {
+    guarded(0, "InputSource", || {
+        runtime().as_ref().map_or(0, |r| r.input() as i32)
+    })
+}
+
+/// Lets keys stand in for a missing controller, or stops them.
+fn set_keyboard(enabled: bool) -> bool {
+    guarded(false, "SetKeyboard", || {
+        runtime().as_ref().is_some_and(|r| {
+            r.set_keyboard(enabled);
+            true
+        })
+    })
+}
+
+/// Skate 3's scoring: active (1/0), sequence points, multiplier, banked
+/// total, tricks announced, landings, last landing's points, bails. The
+/// three counters only grow; the HUD watches them for new events.
+fn score() -> Vec<f32> {
+    guarded(Vec::new(), "Score", || {
+        runtime().as_ref().map_or_else(Vec::new, |r| {
+            let s = r.score();
+            vec![
+                if s.active { 1. } else { 0. },
+                s.sequence,
+                s.multiplier,
+                s.total,
+                s.tricks as f32,
+                s.landings as f32,
+                s.last_landing,
+                s.bails as f32,
+            ]
+        })
+    })
+}
+
+/// The trick the running sequence was last announced as.
+fn trick() -> String {
+    guarded(String::new(), "Trick", || {
+        runtime()
+            .as_ref()
+            .map(|r| r.score().trick)
+            .unwrap_or_default()
     })
 }
 
@@ -289,8 +393,7 @@ fn pad_buttons() -> i32 {
             let mut state = [0u32; 4];
             // SAFETY: XINPUT_STATE is 16 bytes, 4-aligned: the packet number,
             // then the gamepad whose first field is the u16 button mask.
-            (unsafe { XInputGetState(slot, &mut state) } == 0)
-                .then(|| (state[1] & 0xffff) as i32)
+            (unsafe { XInputGetState(slot, &mut state) } == 0).then(|| (state[1] & 0xffff) as i32)
         };
         if let Some(slot) = pad.slot {
             if let Some(buttons) = read(slot) {

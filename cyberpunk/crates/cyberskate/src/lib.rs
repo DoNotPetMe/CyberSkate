@@ -6,10 +6,11 @@
 //! thread, and hands back the skater, deck and camera in Night City
 //! coordinates.
 pub mod coords;
+pub mod keyboard;
 pub mod rails;
 pub mod runtime;
 pub mod scan;
 
 pub use coords::Frame;
-pub use runtime::{Runtime, SkateFrame, Status};
-pub use scan::{Collision, Scan};
+pub use runtime::{InputSource, Runtime, ScoreState, SkateFrame, Status};
+pub use scan::{Collision, PostMemory, Scan};

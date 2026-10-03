@@ -11,7 +11,26 @@ pub struct Controls {
     pub left: [i16; 2],
     pub right: [i16; 2],
 }
+/// What the scorer reported over the ticks since the last `take_score_events`.
+#[derive(Clone, Debug, Default)]
+pub struct ScoreEvents {
+    /// Tricks announced, in order.
+    pub tricks: Vec<String>,
+    /// Sequences banked by landings, in order.
+    pub landed: Vec<f32>,
+    pub bails: u32,
+}
+/// The scorer's running state.
+#[derive(Clone, Debug, Default)]
+pub struct Score {
+    pub trick: String,
+    pub active: bool,
+    pub sequence: f32,
+    pub multiplier: f32,
+    pub total: f32,
+}
 pub struct Session {
+    score_events: ScoreEvents,
     physics: GamePhysics,
     skater: SkaterRuntime,
     controls: PlayerControls,
@@ -54,6 +73,7 @@ impl Session {
         let skater = SkaterRuntime::load(root, &graphs, &physics, "easy")?;
         eprintln!("IW4L_SKATE_LOAD skater {}ms", started.elapsed().as_millis());
         Ok(Self {
+            score_events: ScoreEvents::default(),
             physics,
             skater,
             controls: PlayerControls::load(root)?,
@@ -145,7 +165,32 @@ impl Session {
             &mut actions,
             published.controller_available(),
             &mut self.camera,
-        )
+        )?;
+        let scoring = &self.skater.scoring;
+        if scoring.new_trick {
+            self.score_events.tricks.push(scoring.trick_name().to_owned());
+        }
+        if let Some(points) = scoring.landed {
+            self.score_events.landed.push(points);
+        }
+        if scoring.close_tricks {
+            self.score_events.bails += 1;
+        }
+        Ok(())
+    }
+    /// Tricks, landings and bails since the last call.
+    pub fn take_score_events(&mut self) -> ScoreEvents {
+        std::mem::take(&mut self.score_events)
+    }
+    pub fn score(&self) -> Score {
+        let scoring = &self.skater.scoring;
+        Score {
+            trick: scoring.trick_name().to_owned(),
+            active: scoring.sequence_active(),
+            sequence: scoring.sequence_score(),
+            multiplier: scoring.multiplier(),
+            total: scoring.banked_total(),
+        }
     }
     /// Deterministic raw-packet entry point for playback/diagnostics.
     pub fn tick(&mut self, input: Controls) -> Result<(), String> {

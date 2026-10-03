@@ -3,7 +3,7 @@
 --
 -- A scan is a square grid of downward casts, then bisection of the grid
 -- edges the plugin reports as steps (curbs, ledges, drop-offs), then a ring
--- of horizontal casts for walls. The work is spread over frames by a ray
+-- of horizontal casts for walls and a low ring for poles and bollards. The work is spread over frames by a ray
 -- budget; the skater keeps riding the previous scan meanwhile.
 local Native = require("modules/native")
 
@@ -47,6 +47,17 @@ local function snap(value, spacing)
     return math.floor(value / spacing + 0.5) * spacing
 end
 
+local function groups(settings)
+    local list = {}
+    for _, group in ipairs(settings.scan.groups) do
+        list[#list + 1] = group
+    end
+    if settings.solidVehicles then
+        list[#list + 1] = "Vehicle"
+    end
+    return list
+end
+
 -- Starts a scan centred on (x, y), looking for ground around height `floor`,
 -- with walls looked for from `eye` (the skater's own position).
 function Scanner.begin(settings, x, y, floor, eyeX, eyeY)
@@ -61,7 +72,7 @@ function Scanner.begin(settings, x, y, floor, eyeX, eyeY)
     local oy = snap(y, spacing) - half
     job = {
         settings = s,
-        cast = caster(s.groups),
+        cast = caster(groups(settings)),
         size = size,
         spacing = spacing,
         ox = ox,
@@ -70,6 +81,7 @@ function Scanner.begin(settings, x, y, floor, eyeX, eyeY)
         bottom = floor - s.below,
         floor = floor,
         eye = { eyeX, eyeY, floor + s.ringHeight },
+        knee = floor + s.lowRingHeight,
         ground = {},
         heights = {},
         next = 0,
@@ -79,6 +91,8 @@ function Scanner.begin(settings, x, y, floor, eyeX, eyeY)
         breakIndex = 1,
         walls = {},
         ringIndex = 0,
+        posts = {},
+        lowIndex = 0,
         centre = { x = x, y = y },
     }
     Scanner.rays = 0
@@ -201,6 +215,28 @@ local function ring(j, budget)
         budget = budget - 1
     end
     if j.ringIndex >= count then
+        j.phase = "low"
+    end
+    return budget
+end
+
+-- Casts at knee height: thin things the grid stepped over.
+local function low(j, budget)
+    local s = j.settings
+    local count = math.max(0, math.floor(s.lowRingRays))
+    local ex, ey, ez = j.eye[1], j.eye[2], j.knee
+    while budget > 0 and j.lowIndex < count do
+        local angle = j.lowIndex / count * 2 * math.pi
+        local dx, dy = math.cos(angle), math.sin(angle)
+        local hit = j.cast(ex, ey, ez, ex + dx * s.lowRingRange, ey + dy * s.lowRingRange, ez)
+        local base = j.lowIndex * 6
+        for k = 1, 6 do
+            j.posts[base + k] = hit and hit[k] or MISS
+        end
+        j.lowIndex = j.lowIndex + 1
+        budget = budget - 1
+    end
+    if j.lowIndex >= count then
         j.phase = "submit"
     end
     return budget
@@ -221,9 +257,12 @@ function Scanner.advance(budget)
     if j.phase == "ring" and budget > 0 then
         budget = ring(j, budget)
     end
+    if j.phase == "low" and budget > 0 then
+        budget = low(j, budget)
+    end
     if j.phase == "submit" then
         job = nil
-        local ok = Native.submitScan(header(j), j.ground, j.edges, j.walls)
+        local ok = Native.submitScan(header(j), j.ground, j.edges, j.walls, j.posts)
         if ok then
             Scanner.submitted = Scanner.submitted + 1
             Scanner.last = { x = j.centre.x, y = j.centre.y, time = Scanner.time }
@@ -245,7 +284,7 @@ end
 
 -- Height of the ground straight below (x, y, z), or nil.
 function Scanner.groundBelow(settings, x, y, z)
-    local cast = caster(settings.scan.groups)
+    local cast = caster(groups(settings))
     local hit = cast(x, y, z + 0.5, x, y, z - settings.scan.below)
     return hit and hit[3] or nil
 end

@@ -16,7 +16,8 @@ Cyberpunk 2077 (PC) and Skate 3 (Xbox 360, extracted).
   folder beside it (see [SKATE.md](SKATE.md#where-does-defaultxex-come-from)).
   The `default.xex` alone is not enough: the skater, animations and physics
   settings are read from `data/`.
-- An **Xbox / XInput controller**. Skate 3 is played on the sticks.
+- An **Xbox / XInput controller** is best: Skate 3 is played on the sticks.
+  Without one, the keyboard stands in for a pad (below).
 
 ## Install
 
@@ -40,7 +41,27 @@ Cyberpunk 2077 (PC) and Skate 3 (Xbox 360, extracted).
 |---|---|
 | toggle key / both sticks clicked | get on or off the board |
 | controller | Skate 3's own controls |
-| CET overlay → CyberSkate | status, camera, scan settings, reload |
+| CET overlay → CyberSkate | status, camera, keyboard, cars, scan settings, reload |
+
+The HUD shows speed, the running trick as Skate 3 names it with its points
+and multiplier, the session score, and a pop-up for every landing (`+850`)
+and bail.
+
+### Without a controller
+
+When no controller answers, keys held while the game has focus drive a
+virtual Xbox pad (turn it off under **Keyboard skating** in the overlay).
+The sticks move at a real stick's speed, so tapping ↓ then ↑ is an ollie and
+flicking to a diagonal gives the flip tricks, as on the pad.
+
+| keys | pad |
+|---|---|
+| W A S D | left stick |
+| ↑ ↓ ← → | right stick (flick-it) |
+| Space, Left Ctrl, Left Shift, F | A, B, X, Y |
+| Q, E | left, right trigger (grabs) |
+| Z, C | left, right bumper |
+| Enter, Backspace | Start, Back |
 
 While riding, V's walking, jumping, weapons, scanner, phone and camera
 control are held off so the controller only skates. The holds are copies of
@@ -64,20 +85,28 @@ camera behind the skater (experimental: V is drawn as the first-person body).
 Night City has no collision Skate can read, so the mod **scans** it: a grid
 of downward ray casts around the skater (33 × 33 at 0.5 m by default), each
 step between samples bisected to a few centimetres, and a ring of horizontal
-casts for walls. The adapter cuts every grid cell with marching squares
+casts for walls, and a second ring at knee height for poles and bollards the
+grid steps over. Those become posts that later scans keep until a cast goes
+straight through where one stood, so a pole does not blink in and out as the
+casts sweep past it. Parked cars are scanned like ground: their roofs and
+bonnets are rideable (turn **Cars are solid** off if traffic leaves ghosts).
+The adapter cuts every grid cell with marching squares
 where the ground is not one surface, keeps each side's height, joins them
 with vertical faces, and runs the MW2 mode's lip finder over the result, so
 curbs, ledges, benches and drop-offs become grind rails. Scans are spread
 over frames and rebuilt off the simulation thread as the skater moves; a
 grind in progress is never given new geometry.
 
+Skate 3 simulates at a fixed rate; V and the view are placed between its two
+latest ticks every rendered frame, so motion stays smooth at any frame rate.
+
 ## Known limits
 
 - V is moved with the skater but does not play Skate 3's animations, and no
   board is drawn: skating is felt through the view, the HUD and the physics.
-- Collision comes from scans: thin things (poles, railings) can be missed,
-  NPCs and cars are not solid, and walls are only found where the ring of
-  casts reaches them.
+- Collision comes from scans: thin railings above knee height can be
+  missed, NPCs are not solid, moving traffic is a second out of date, and
+  walls are only found where the casts reach them.
 - Built and tested here without the game: the adapter by unit tests, the
   CET mod by a mocked run, the plugin by the Windows CI build. The first
   in-game runs are the real test.

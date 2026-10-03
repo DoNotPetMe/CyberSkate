@@ -24,6 +24,16 @@ const WALL_NORMAL_Z: f32 = 0.6;
 /// How far walls reach below and above the ground they stand on.
 const WALL_BELOW: f32 = 1.5;
 const WALL_ABOVE: f32 = 4.0;
+/// Low ring hits become posts this wide, this tall above their ground.
+const POST_HALF: f32 = 0.15;
+const POST_ABOVE: f32 = 2.2;
+/// Ground this much higher just behind a low hit means the grid already
+/// caught the obstacle.
+const POST_RAISED: f32 = 0.2;
+/// Posts closer than this are one post.
+const POST_SAME: f32 = 0.3;
+/// A low cast that hit nothing is taken to have reached at least this far.
+const MISS_REACH: f32 = 4.0;
 /// Crossings stay this fraction of an edge away from its samples: closer,
 /// the slivers beside them are too thin to keep and would leave holes.
 const CROSSING_MARGIN: f32 = 0.1;
@@ -39,6 +49,15 @@ pub struct Ground {
 pub struct WallHit {
     pub position: Vec3,
     pub normal: Vec3,
+}
+
+/// A thin obstacle the low ring found: a square column standing on
+/// `ground`, one face turned to `facing`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Post {
+    pub centre: Vec2,
+    pub facing: Vec2,
+    pub ground: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -64,6 +83,9 @@ pub struct Scan {
     pub floor: f32,
     /// Ring casts in angular order; misses are `None`.
     pub ring: Vec<Option<WallHit>>,
+    /// The low ring, cast at knee height for things too thin for the grid:
+    /// poles, bollards, posts.
+    pub low_ring: Vec<Option<WallHit>>,
 }
 
 /// Header of a scan as the mod sends it: origin x, origin y, spacing, size,
@@ -116,6 +138,7 @@ impl Scan {
             eye: Vec3::new(ex, ey, ez),
             floor,
             ring: Vec::new(),
+            low_ring: Vec::new(),
         })
     }
 
@@ -124,10 +147,11 @@ impl Scan {
         ground: &[f32],
         edges: &[f32],
         walls: &[f32],
+        posts: &[f32],
     ) -> Result<Self, String> {
         let mut scan = Self::parse_grid(header, ground)?;
-        if edges.len() % 3 != 0 || walls.len() % 6 != 0 {
-            return Err("scan edges come in threes and walls in sixes".into());
+        if edges.len() % 3 != 0 || walls.len() % 6 != 0 || posts.len() % 6 != 0 {
+            return Err("scan edges come in threes, walls and posts in sixes".into());
         }
         for e in edges.chunks_exact(3) {
             let (index, axis, t) = (e[0], e[1], e[2]);
@@ -140,17 +164,21 @@ impl Scan {
                 scan.crossings.insert((index, axis), t);
             }
         }
-        scan.ring = walls
-            .chunks_exact(6)
-            .map(|w| {
-                let position = Vec3::new(w[0], w[1], w[2]);
-                let normal = Vec3::new(w[3], w[4], w[5]);
-                (w.iter().all(|v| hit(*v)) && normal.length_squared() > 1e-6).then(|| WallHit {
-                    position,
-                    normal: normal.normalize(),
+        let hits = |values: &[f32]| -> Vec<Option<WallHit>> {
+            values
+                .chunks_exact(6)
+                .map(|w| {
+                    let position = Vec3::new(w[0], w[1], w[2]);
+                    let normal = Vec3::new(w[3], w[4], w[5]);
+                    (w.iter().all(|v| hit(*v)) && normal.length_squared() > 1e-6).then(|| WallHit {
+                        position,
+                        normal: normal.normalize(),
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
+        scan.ring = hits(walls);
+        scan.low_ring = hits(posts);
         Ok(scan)
     }
 
@@ -228,6 +256,10 @@ impl Scan {
     /// Triangles in Night City coordinates, counter-clockwise seen from their
     /// solid side's outside.
     pub fn triangles(&self) -> Vec<[Vec3; 3]> {
+        self.triangles_with(&self.found_posts())
+    }
+
+    fn triangles_with(&self, posts: &[Post]) -> Vec<[Vec3; 3]> {
         let mut out = Triangles::default();
         for j in 0..self.size - 1 {
             for i in 0..self.size - 1 {
@@ -235,7 +267,118 @@ impl Scan {
             }
         }
         self.walls(&mut out);
+        for post in posts {
+            out.post(
+                post.centre,
+                post.facing,
+                post.ground - WALL_BELOW,
+                post.ground + POST_ABOVE,
+            );
+        }
         out.0
+    }
+
+    /// Whether `at` lies within the scanned square.
+    fn covers(&self, at: Vec2) -> bool {
+        let far = self.origin + Vec2::splat((self.size - 1) as f32 * self.spacing);
+        at.cmpge(self.origin).all() && at.cmple(far).all()
+    }
+
+    /// Whether a low cast went straight through where `post` stood.
+    fn clears(&self, post: &Post) -> bool {
+        let n = self.low_ring.len();
+        let to = post.centre - self.eye.truncate();
+        if n == 0 || to.length() < 0.3 {
+            return false;
+        }
+        let tau = std::f32::consts::TAU;
+        let k = ((to.y.atan2(to.x).rem_euclid(tau) / tau * n as f32).round() as usize) % n;
+        let angle = k as f32 / n as f32 * tau;
+        let dir = Vec2::new(angle.cos(), angle.sin());
+        if dir.perp_dot(to).abs() > POST_HALF * 0.8 {
+            return false;
+        }
+        let along = dir.dot(to);
+        match self.low_ring[k] {
+            Some(hit) => {
+                (hit.position.truncate() - self.eye.truncate()).length() > along + POST_HALF * 2.
+            }
+            None => along < MISS_REACH,
+        }
+    }
+
+    /// Height of the sample nearest `at`, if it found ground.
+    fn ground_at(&self, at: Vec2) -> Option<f32> {
+        let local = ((at - self.origin) / self.spacing).round();
+        if local.x < 0.
+            || local.y < 0.
+            || local.x >= self.size as f32
+            || local.y >= self.size as f32
+        {
+            return None;
+        }
+        self.ground[self.index(local.x as usize, local.y as usize)].map(|g| g.height)
+    }
+
+    /// The highest ground found within `radius` of `at`.
+    fn highest_near(&self, at: Vec2, radius: f32) -> Option<f32> {
+        let reach = (radius / self.spacing).ceil() as i64;
+        let centre = ((at - self.origin) / self.spacing).round();
+        let mut best: Option<f32> = None;
+        for dj in -reach..=reach {
+            for di in -reach..=reach {
+                let (i, j) = (centre.x as i64 + di, centre.y as i64 + dj);
+                if i < 0 || j < 0 || i >= self.size as i64 || j >= self.size as i64 {
+                    continue;
+                }
+                let index = self.index(i as usize, j as usize);
+                if self.xy(index).distance(at) > radius {
+                    continue;
+                }
+                if let Some(g) = self.ground[index] {
+                    best = Some(best.map_or(g.height, |b: f32| b.max(g.height)));
+                }
+            }
+        }
+        best
+    }
+
+    /// Low ring hits on things the grid stepped over become thin posts.
+    /// Where the grid did see the obstacle (a bench, a ledge, a car) its
+    /// raised ground already stands there and nothing is added; where the
+    /// high ring hit the same wall, its face already does.
+    fn found_posts(&self) -> Vec<Post> {
+        let mut found = Vec::new();
+        for (k, low) in self.low_ring.iter().enumerate() {
+            let Some(low) = low.filter(|w| w.normal.z.abs() < WALL_NORMAL_Z) else {
+                continue;
+            };
+            let reach = (low.position - self.eye).truncate().length();
+            let same_wall = self.ring.len() == self.low_ring.len()
+                && self.ring[k].is_some_and(|high| {
+                    high.normal.z.abs() < WALL_NORMAL_Z
+                        && ((high.position - self.eye).truncate().length() - reach).abs() < 0.5
+                });
+            if same_wall {
+                continue;
+            }
+            let normal = low.normal.truncate().normalize_or_zero();
+            if normal == Vec2::ZERO {
+                continue;
+            }
+            let at = low.position.truncate();
+            let front = self.ground_at(at + normal * 0.3).unwrap_or(self.floor);
+            let behind = self.highest_near(at - normal * 0.3, 0.6);
+            if behind.is_some_and(|h| h > front + POST_RAISED) {
+                continue;
+            }
+            found.push(Post {
+                centre: at - normal * POST_HALF,
+                facing: normal,
+                ground: front,
+            });
+        }
+        found
     }
 
     fn cell(&self, i: usize, j: usize, out: &mut Triangles) {
@@ -482,6 +625,28 @@ impl Triangles {
         }
     }
 
+    /// A square column centred on `centre`, one face turned to `facing`.
+    fn post(&mut self, centre: Vec2, facing: Vec2, low: f32, high: f32) {
+        let u = facing * POST_HALF;
+        let v = facing.perp() * POST_HALF;
+        let corners = [
+            centre + u + v,
+            centre - u + v,
+            centre - u - v,
+            centre + u - v,
+        ];
+        let middle = (low + high) * 0.5;
+        for k in 0..4 {
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
+            let outward = ((a + b) * 0.5 - centre) * 4.;
+            self.facing(
+                [a.extend(low), b.extend(low), b.extend(high), a.extend(high)],
+                (centre + outward).extend(middle),
+            );
+        }
+        self.facing(corners.map(|c| c.extend(high)), centre.extend(high + 1.));
+    }
+
     /// The vertical face along `p`–`q` between side x (heights `hx`) and
     /// side y (heights `hy`), facing whichever side is lower. `toward_y` is a
     /// point on side y.
@@ -515,6 +680,32 @@ impl Triangles {
     }
 }
 
+/// Posts seen by earlier scans. A pole is only hit when a cast happens to
+/// line up with it, so one scan alone would let it blink in and out of the
+/// world; a remembered post stays until a later cast passes through where it
+/// stood or it leaves the scanned square.
+#[derive(Default)]
+pub struct PostMemory {
+    posts: Vec<Post>,
+}
+
+impl PostMemory {
+    /// The posts `scan` should carry: what it found, and what earlier scans
+    /// found that it neither found again nor ruled out.
+    pub fn update(&mut self, scan: &Scan) -> Vec<Post> {
+        let found = scan.found_posts();
+        self.posts.retain(|p| {
+            scan.covers(p.centre)
+                && !scan.clears(p)
+                && found
+                    .iter()
+                    .all(|f| f.centre.distance(p.centre) >= POST_SAME)
+        });
+        self.posts.extend(found);
+        self.posts.clone()
+    }
+}
+
 /// Collision ready for the skate engine: triangles and rails in skate space.
 pub struct Collision {
     pub triangles: Vec<[[f32; 3]; 3]>,
@@ -524,7 +715,15 @@ pub struct Collision {
 
 impl Collision {
     pub fn from_scan(scan: &Scan) -> Result<Self, String> {
-        let mut triangles = scan.triangles();
+        Self::from_triangles(scan, scan.triangles())
+    }
+
+    /// As `from_scan`, keeping the posts earlier scans found.
+    pub fn from_scan_remembering(scan: &Scan, memory: &mut PostMemory) -> Result<Self, String> {
+        Self::from_triangles(scan, scan.triangles_with(&memory.update(scan)))
+    }
+
+    fn from_triangles(scan: &Scan, mut triangles: Vec<[Vec3; 3]>) -> Result<Self, String> {
         let mut seen = HashSet::new();
         triangles.retain(|t| {
             let mut k = t.map(|v| v.to_array().map(|x| (x * 200.).round() as i32));
@@ -574,7 +773,7 @@ mod tests {
             }
         }
         let header = [0., 0., spacing, size as f32, 0., 0., 1., 0.];
-        Scan::parse(&header, &ground, &[], &[]).unwrap()
+        Scan::parse(&header, &ground, &[], &[], &[]).unwrap()
     }
 
     fn up_area(tris: &[[Vec3; 3]]) -> f32 {
@@ -776,6 +975,114 @@ mod tests {
         }
     }
 
+    /// A ring of hits around a thin pole at (6, 4), `None` elsewhere.
+    fn around_pole(scan: &Scan, count: usize) -> Vec<Option<WallHit>> {
+        let pole = Vec2::new(6., 4.);
+        (0..count)
+            .map(|k| {
+                let a = k as f32 / count as f32 * std::f32::consts::TAU;
+                let dir = Vec2::new(a.cos(), a.sin());
+                let to = pole - scan.eye.truncate();
+                let along = to.dot(dir);
+                (along > 0. && (to - dir * along).length() < 0.06).then(|| WallHit {
+                    position: (scan.eye.truncate() + dir * (along - 0.05)).extend(scan.eye.z),
+                    normal: (-dir).extend(0.),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_pole_the_grid_missed_becomes_a_post() {
+        let mut scan = grid(17, 0.5, |_, _| Some(0.));
+        scan.eye = Vec3::new(4., 4., 0.5);
+        scan.low_ring = around_pole(&scan, 256);
+        assert!(scan.low_ring.iter().flatten().count() >= 1);
+        let tris = scan.triangles();
+        let post: Vec<_> = tris
+            .iter()
+            .filter(|t| {
+                t.iter()
+                    .all(|p| p.truncate().distance(Vec2::new(6., 4.)) < 0.5)
+            })
+            .collect();
+        assert!(!post.is_empty(), "no post at the pole");
+        // The face toward the skater faces the skater, and it reaches up.
+        assert!(post.iter().any(|t| {
+            let n = (t[1] - t[0]).cross(t[2] - t[0]);
+            n.x < 0. && n.z.abs() < 1e-3 && t.iter().any(|p| p.z > 2.)
+        }));
+    }
+
+    #[test]
+    fn an_obstacle_the_grid_saw_gets_no_post() {
+        // A 0.5 m bench from x = 5 to 7: knee-height casts hit its side,
+        // and its top is already in the grid.
+        let mut scan = grid(17, 0.5, |x, y| {
+            Some(if (x - 6.).abs() < 1. && (y - 4.).abs() < 1. {
+                0.5
+            } else {
+                0.
+            })
+        });
+        scan.eye = Vec3::new(4., 4., 0.3);
+        scan.low_ring = (0..256)
+            .map(|k| {
+                let a = k as f32 / 256. * std::f32::consts::TAU;
+                let dir = Vec2::new(a.cos(), a.sin());
+                let along = 1. / dir.x;
+                let at = scan.eye.truncate() + dir * along;
+                (dir.x > 0. && (at.y - 4.).abs() < 1.).then(|| WallHit {
+                    position: at.extend(scan.eye.z),
+                    normal: -Vec3::X,
+                })
+            })
+            .collect();
+        assert!(scan.low_ring.iter().flatten().count() > 10);
+        let tall = scan
+            .triangles()
+            .iter()
+            .filter(|t| t.iter().any(|p| p.z > 1.))
+            .count();
+        assert_eq!(tall, 0);
+    }
+
+    #[test]
+    fn a_pole_is_remembered_until_a_cast_passes_through_it() {
+        let mut memory = PostMemory::default();
+        let at_pole = |p: &[Vec3; 3]| {
+            p.iter()
+                .all(|v| v.truncate().distance(Vec2::new(6., 4.)) < 0.5)
+        };
+        let mut scan = grid(17, 0.5, |_, _| Some(0.));
+        scan.eye = Vec3::new(4., 4., 0.5);
+        scan.low_ring = around_pole(&scan, 256);
+        assert!(
+            scan.triangles_with(&memory.update(&scan))
+                .iter()
+                .any(at_pole)
+        );
+
+        // Seen from elsewhere, no cast lines up with the pole: it stays.
+        scan.eye = Vec3::new(2., 1., 0.5);
+        scan.low_ring = vec![None; 16];
+        assert!(
+            scan.triangles_with(&memory.update(&scan))
+                .iter()
+                .any(at_pole)
+        );
+
+        // A cast runs straight through where it stood: it is gone.
+        scan.eye = Vec3::new(4., 4., 0.5);
+        scan.low_ring = vec![None; 256];
+        assert!(
+            !scan
+                .triangles_with(&memory.update(&scan))
+                .iter()
+                .any(at_pole)
+        );
+    }
+
     /// The skate engine's own collision and grind-world builders accept
     /// what the mesher makes.
     #[test]
@@ -801,6 +1108,11 @@ mod tests {
                 })
             })
             .collect();
+        street.low_ring = around_pole(&street, 256);
+        assert!(street.triangles().iter().any(|t| {
+            t.iter()
+                .all(|p| p.truncate().distance(Vec2::new(6., 4.)) < 0.5)
+        }));
         let collision = Collision::from_scan(&street).unwrap();
         assert!(collision.triangles.len() > 1500);
         assert!(!collision.rails.is_empty(), "{:?}", collision.census);
@@ -811,13 +1123,14 @@ mod tests {
 
     #[test]
     fn malformed_scans_are_refused() {
-        assert!(Scan::parse(&[0.; 7], &[], &[], &[]).is_err());
-        assert!(Scan::parse(&[0., 0., 0.5, 3., 0., 0., 0., 0.], &[0.; 35], &[], &[]).is_err());
-        assert!(Scan::parse(&[0., 0., 0.5, 1e9, 0., 0., 0., 0.], &[], &[], &[]).is_err());
+        assert!(Scan::parse(&[0.; 7], &[], &[], &[], &[]).is_err());
+        assert!(Scan::parse(&[0., 0., 0.5, 3., 0., 0., 0., 0.], &[0.; 35], &[], &[], &[]).is_err());
+        assert!(Scan::parse(&[0., 0., 0.5, 1e9, 0., 0., 0., 0.], &[], &[], &[], &[]).is_err());
         assert!(
             Scan::parse(
                 &[f32::NAN, 0., 0.5, 2., 0., 0., 0., 0.],
                 &[0.; 16],
+                &[],
                 &[],
                 &[]
             )

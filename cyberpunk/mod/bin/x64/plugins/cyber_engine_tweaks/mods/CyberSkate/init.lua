@@ -3,7 +3,8 @@
 -- The RED4ext plugin runs the Skate 3 engine; this mod feeds it the world
 -- (ray-cast scans), steps it every frame and carries V along. Toggle with
 -- the "Toggle skateboard" binding (CET overlay > Bindings) or by clicking
--- both sticks in on the controller.
+-- both sticks in on the controller. Without a controller the keyboard
+-- stands in for one.
 local Settings = require("modules/settings")
 local Native = require("modules/native")
 local Rider = require("modules/rider")
@@ -87,9 +88,28 @@ local function hud(settings)
         if Rider.state == "entering" then
             ImGui.Text("Dropping in...")
         elseif Rider.state == "riding" then
-            ImGui.Text(("%s  %.0f km/h"):format(Rider.skaterState, Rider.speed * 3.6))
-            if not Native.controller() then
-                ImGui.TextColored(1, 0.6, 0.2, 1, "Connect an XInput controller to skate")
+            ImGui.Text(("%.0f km/h"):format(Rider.speed * 3.6))
+            local score = Rider.score
+            if score then
+                if score[Native.S.active] == 1 then
+                    local multiplier = score[Native.S.multiplier]
+                    local line = Rider.trick ~= "" and Rider.trick or "..."
+                    if multiplier > 1.001 then
+                        line = ("%s  %d x%.1f"):format(line, math.floor(score[Native.S.sequence] + 0.5), multiplier)
+                    else
+                        line = ("%s  %d"):format(line, math.floor(score[Native.S.sequence] + 0.5))
+                    end
+                    ImGui.TextColored(1, 0.85, 0.3, 1, line)
+                end
+                ImGui.Text(("Score %d"):format(math.floor(score[Native.S.total] + 0.5)))
+            end
+            for _, p in ipairs(Rider.popups) do
+                ImGui.TextColored(p.color[1], p.color[2], p.color[3], 1, p.text)
+            end
+            if Rider.input == Native.INPUT.none then
+                ImGui.TextColored(1, 0.6, 0.2, 1, "Connect a controller, or turn on keyboard skating")
+            elseif Rider.input == Native.INPUT.keyboard then
+                ImGui.TextDisabled("Keys: WASD lean, arrows flick, Space A, Shift X, Ctrl B, F Y, Q/E grabs")
             end
         end
         if message then
@@ -137,6 +157,11 @@ local function window(settings)
     end
     settings.headBob = ImGui.Checkbox("Head follows the skater's crouch", settings.headBob)
     settings.padToggle = ImGui.Checkbox("Click both sticks to get on/off", settings.padToggle)
+    settings.keyboard, changed = ImGui.Checkbox("Keyboard skating when no controller", settings.keyboard)
+    if changed then
+        Native.setKeyboard(settings.keyboard)
+    end
+    settings.solidVehicles = ImGui.Checkbox("Cars are solid (traffic may leave ghosts)", settings.solidVehicles)
     settings.showHud = ImGui.Checkbox("Show HUD", settings.showHud)
 
     if ImGui.CollapsingHeader("World scan") then
@@ -145,6 +170,7 @@ local function window(settings)
         s.spacing = ImGui.SliderFloat("Sample spacing (m)", s.spacing, 0.25, 1.5, "%.2f")
         s.raysPerFrame = ImGui.SliderInt("Ray casts per frame", s.raysPerFrame, 40, 2000)
         s.ringRays = ImGui.SliderInt("Wall rays", s.ringRays, 0, 256)
+        s.lowRingRays = ImGui.SliderInt("Pole rays", s.lowRingRays, 0, 256)
         s.recenter = ImGui.SliderFloat("Rescan after (m)", s.recenter, 1, 12, "%.1f")
         s.lead = ImGui.SliderFloat("Look ahead (s)", s.lead, 0, 1.5, "%.2f")
         ImGui.Text(("Last scan: %d casts"):format(Scanner.rays))

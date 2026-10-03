@@ -5,11 +5,13 @@
 //! sends jobs and reads the latest published frame, so no call made from the
 //! game ever waits on the simulation.
 use crate::coords::{self, Frame};
+use crate::keyboard::{KeyboardPad, Keys};
 use crate::scan::{Collision, Scan};
 use bevy::math::Vec3;
-use skate_host::bridge::{ControllerTransport, PreparedCollision, Session};
+use skate_host::bridge::{ControllerTransport, InputFrame, PreparedCollision, Session};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant};
 
@@ -57,6 +59,28 @@ pub struct SkateFrame {
 }
 
 impl SkateFrame {
+    /// The frame `t` of the way from `self` to `to`, as drawn between two
+    /// simulation ticks.
+    pub fn lerp(&self, to: &SkateFrame, t: f32) -> SkateFrame {
+        let mix = |a: Vec3, b: Vec3| a.lerp(b, t);
+        SkateFrame {
+            sequence: to.sequence,
+            tick: to.tick,
+            skater: self.skater.lerp(&to.skater, t),
+            deck: self.deck.lerp(&to.deck, t),
+            head: match (self.head, to.head) {
+                (Some(a), Some(b)) => Some(mix(a, b)),
+                (_, b) => b,
+            },
+            camera: match (self.camera, to.camera) {
+                (Some((a, fa)), Some((b, fb))) => Some((a.lerp(&b, t), fa + (fb - fa) * t)),
+                (_, b) => b,
+            },
+            velocity: mix(self.velocity, to.velocity),
+            state: to.state.clone(),
+        }
+    }
+
     /// Length of `to_floats`.
     pub const LEN: usize = 33;
 
@@ -93,6 +117,37 @@ impl SkateFrame {
     }
 }
 
+/// Skate 3's scoring as the HUD shows it.
+#[derive(Clone, Debug, Default)]
+pub struct ScoreState {
+    /// The trick the running sequence was last announced as.
+    pub trick: String,
+    pub active: bool,
+    /// What the running sequence would bank now.
+    pub sequence: f32,
+    pub multiplier: f32,
+    /// Everything banked since the data was loaded.
+    pub total: f32,
+    /// Counters the HUD watches for new events.
+    pub tricks: u64,
+    pub landings: u64,
+    pub last_landing: f32,
+    pub bails: u64,
+}
+
+/// What drove the skater on the last step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputSource {
+    #[default]
+    None = 0,
+    Controller = 1,
+    Keyboard = 2,
+}
+
+/// Reads the keys that drive the virtual pad, or `None` while the game does
+/// not have the keyboard (another window has focus).
+pub type KeySource = Box<dyn FnMut() -> Option<Keys> + Send>;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CollisionInfo {
     pub generation: u64,
@@ -103,7 +158,8 @@ pub struct CollisionInfo {
 struct Shared {
     status: Status,
     frame: Option<SkateFrame>,
-    controller: bool,
+    input: InputSource,
+    score: ScoreState,
     collision: CollisionInfo,
     notice: Option<String>,
 }
@@ -127,6 +183,7 @@ type Built = (u64, Result<(PreparedCollision, CollisionInfo), String>);
 pub struct Runtime {
     jobs: mpsc::Sender<Job>,
     shared: Arc<Mutex<Shared>>,
+    keyboard: Arc<AtomicBool>,
     epoch: u64,
     root: PathBuf,
 }
@@ -140,23 +197,26 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 impl Runtime {
     /// Starts loading the converted Skate 3 data in `root` (the converter's
     /// `assets` folder). Loading takes seconds; poll `status`.
-    pub fn start(root: &Path) -> Result<Self, String> {
+    pub fn start(root: &Path, keys: Option<KeySource>) -> Result<Self, String> {
         let shared = Arc::new(Mutex::new(Shared {
             status: Status::Loading,
             frame: None,
-            controller: false,
+            input: InputSource::None,
+            score: ScoreState::default(),
             collision: CollisionInfo::default(),
             notice: None,
         }));
         let (jobs, receive) = mpsc::channel();
         let worker = Arc::clone(&shared);
+        let keyboard = Arc::new(AtomicBool::new(true));
+        let keyboard_on = Arc::clone(&keyboard);
         let assets = root.to_owned();
         std::thread::Builder::new()
             .name("cyberskate".into())
             .stack_size(32 * 1024 * 1024)
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    simulate(&assets, receive, &worker)
+                    simulate(&assets, receive, &worker, keys, &keyboard_on)
                 }));
                 let error = match result {
                     Ok(Ok(())) => return,
@@ -173,6 +233,7 @@ impl Runtime {
         Ok(Self {
             jobs,
             shared,
+            keyboard,
             epoch: 0,
             root: root.to_owned(),
         })
@@ -190,8 +251,17 @@ impl Runtime {
         lock(&self.shared).frame.clone()
     }
 
-    pub fn controller(&self) -> bool {
-        lock(&self.shared).controller
+    pub fn input(&self) -> InputSource {
+        lock(&self.shared).input
+    }
+
+    pub fn score(&self) -> ScoreState {
+        lock(&self.shared).score.clone()
+    }
+
+    /// Whether keys may stand in for a controller that is not connected.
+    pub fn set_keyboard(&self, enabled: bool) {
+        self.keyboard.store(enabled, Ordering::Relaxed);
     }
 
     pub fn collision(&self) -> CollisionInfo {
@@ -250,7 +320,13 @@ fn placeholder() -> Vec<[[f32; 3]; 3]> {
     ]
 }
 
-fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> Result<(), String> {
+fn simulate(
+    root: &Path,
+    jobs: mpsc::Receiver<Job>,
+    shared: &Mutex<Shared>,
+    mut keys: Option<KeySource>,
+    keyboard: &AtomicBool,
+) -> Result<(), String> {
     let mut session = Session::new(root, placeholder(), vec![], [0.; 3], 0.)?;
     let builder = session.collision_builder();
     let (scans, scan_jobs) = mpsc::channel::<(u64, Box<Scan>)>();
@@ -259,12 +335,13 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
         .name("cyberskate-collision".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
+            let mut posts = crate::scan::PostMemory::default();
             while let Ok(mut latest) = scan_jobs.recv() {
                 while let Ok(newer) = scan_jobs.try_recv() {
                     latest = newer;
                 }
                 let (generation, scan) = latest;
-                let prepared = Collision::from_scan(&scan).and_then(|c| {
+                let prepared = Collision::from_scan_remembering(&scan, &mut posts).and_then(|c| {
                     let info = CollisionInfo {
                         generation,
                         triangles: c.triangles.len(),
@@ -281,6 +358,11 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
     lock(shared).status = Status::Ready;
 
     let mut transport = ControllerTransport::default();
+    let mut keyboard_pad = KeyboardPad::default();
+    let mut packet = 0u32;
+    // The two latest ticks; frames are drawn between them.
+    let mut previous: Option<SkateFrame> = None;
+    let mut current: Option<SkateFrame> = None;
     let mut queue = VecDeque::new();
     let mut generation = 0;
     let mut installed = 0;
@@ -318,6 +400,8 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
             Job::Suspend => {
                 active = false;
                 accumulated = 0.;
+                previous = None;
+                current = None;
                 session.suspend_input();
                 lock(shared).status = Status::Ready;
             }
@@ -361,9 +445,13 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
                 }
                 let heading = coords::heading(forward).unwrap_or(0.);
                 let pose = session.activate(coords::to_skate(position).to_array(), heading)?;
+                session.take_score_events();
                 sequence += 1;
                 state = pose.state.clone();
-                publish(shared, &pose, sequence)?;
+                let frame = frame_of(&pose, sequence)?;
+                previous = None;
+                current = Some(frame.clone());
+                lock(shared).frame = Some(frame);
                 active = true;
                 lock(shared).status = Status::Active;
             }
@@ -396,8 +484,27 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
                         lock(shared).collision = info;
                     }
                 }
-                let input = transport.poll();
-                let controller = input.controller().is_some();
+                let mut input = transport.poll();
+                let mut source = if input.controller().is_some() {
+                    InputSource::Controller
+                } else {
+                    InputSource::None
+                };
+                if source == InputSource::None
+                    && keyboard.load(Ordering::Relaxed)
+                    && let Some(held) = keys.as_mut().and_then(|read| read())
+                {
+                    let pad = keyboard_pad.update(held, dt);
+                    packet = packet.wrapping_add(1);
+                    input = InputFrame::from_pad(
+                        pad.buttons,
+                        pad.triggers,
+                        pad.left,
+                        pad.right,
+                        packet,
+                    );
+                    source = InputSource::Keyboard;
+                }
                 session.collect(input, dt);
                 accumulated = (accumulated + dt).min(MAX_BACKLOG);
                 let mut advanced = false;
@@ -406,23 +513,45 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
                     session.advance()?;
                     advanced = true;
                 }
-                lock(shared).controller = controller;
                 if advanced {
                     let pose = session.pose();
                     sequence += 1;
                     state = pose.state.clone();
-                    publish(shared, &pose, sequence)?;
+                    previous = current.take();
+                    current = Some(frame_of(&pose, sequence)?);
                 }
+                let events = session.take_score_events();
+                let score = session.score();
+                let drawn = match (&previous, &current) {
+                    (Some(a), Some(b)) => {
+                        Some(a.lerp(b, (accumulated / session.period()).clamp(0., 1.)))
+                    }
+                    (None, b) => b.clone(),
+                    _ => None,
+                };
+                let mut shared = lock(shared);
+                shared.input = source;
+                if drawn.is_some() {
+                    shared.frame = drawn;
+                }
+                let s = &mut shared.score;
+                s.tricks += events.tricks.len() as u64;
+                s.landings += events.landed.len() as u64;
+                if let Some(&points) = events.landed.last() {
+                    s.last_landing = points;
+                }
+                s.bails += u64::from(events.bails);
+                s.trick = score.trick;
+                s.active = score.active;
+                s.sequence = score.sequence;
+                s.multiplier = score.multiplier;
+                s.total = score.total;
             }
         }
     }
 }
 
-fn publish(
-    shared: &Mutex<Shared>,
-    pose: &skate_host::bridge::Pose,
-    sequence: u64,
-) -> Result<(), String> {
+fn frame_of(pose: &skate_host::bridge::Pose, sequence: u64) -> Result<SkateFrame, String> {
     if !pose.root.is_finite() || !pose.deck.is_finite() || pose.bones.iter().any(|b| !b.is_finite())
     {
         return Err("the skate engine published a non-finite pose".into());
@@ -445,8 +574,7 @@ fn publish(
         velocity: coords::from_skate(pose.velocity),
         state: pose.state.clone(),
     };
-    lock(shared).frame = Some(frame);
-    Ok(())
+    Ok(frame)
 }
 
 #[cfg(test)]
@@ -456,7 +584,7 @@ mod tests {
     #[test]
     fn missing_skate_data_fails_with_a_reason() {
         let root = std::env::temp_dir().join("cyberskate-no-data");
-        let mut runtime = Runtime::start(&root).unwrap();
+        let mut runtime = Runtime::start(&root, None).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let status = loop {
             match runtime.status() {

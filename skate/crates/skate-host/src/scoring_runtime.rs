@@ -74,6 +74,9 @@ pub(crate) struct Runtime {
     pub new_trick: bool,
     pub modified_trick: bool,
     pub close_tricks: bool,
+    /// The sequence banked by a landing this tick, if one was.
+    pub landed: Option<f32>,
+    banked_total: f32,
 }
 impl Runtime {
     pub fn load(data: &Collections) -> Result<Self, String> {
@@ -110,7 +113,32 @@ impl Runtime {
             new_trick: false,
             modified_trick: false,
             close_tricks: false,
+            landed: None,
+            banked_total: 0.,
         })
+    }
+
+    /// The trick the sequence was last announced as.
+    pub fn trick_name(&self) -> &str {
+        &self.trick_name
+    }
+
+    /// Points the running sequence would bank now, multiplier included.
+    pub fn sequence_score(&self) -> f32 {
+        self.sequence_score
+    }
+
+    pub fn sequence_active(&self) -> bool {
+        self.sequence_active
+    }
+
+    pub fn multiplier(&self) -> f32 {
+        self.session.combo.multiplier
+    }
+
+    /// Everything banked by landings since the session was loaded.
+    pub fn banked_total(&self) -> f32 {
+        self.banked_total
     }
 
     fn penalty(&self, id: usize) -> f32 {
@@ -309,6 +337,7 @@ impl Runtime {
         Ok(())
     }
     pub fn advance(&mut self, f: Frame) -> Result<(), String> {
+        self.landed = None;
         self.new_trick = false;
         self.modified_trick = false;
         self.close_tricks = false;
@@ -553,6 +582,10 @@ impl Runtime {
             self.sequence_score =
                 self.session
                     .publish_sequence(&self.data.session_rules(), 1., bailout, true);
+            if !bailout {
+                self.landed = Some(self.sequence_score);
+                self.banked_total += self.sequence_score;
+            }
             self.sequence_active = false;
             // 82775328 -> 82774E88 closes only for ScoreModule reset/bail
             // output 14630 (82DA4010/82DA4238), not a banked landing.

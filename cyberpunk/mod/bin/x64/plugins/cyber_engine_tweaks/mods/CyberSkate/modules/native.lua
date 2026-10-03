@@ -61,5 +61,16 @@ Native.state = guard("CyberSkate_State", "")
 Native.controller = guard("CyberSkate_Controller", false)
 Native.collision = guard("CyberSkate_Collision", {})
 Native.padButtons = guard("CyberSkate_PadButtons", 0)
+Native.inputSource = guard("CyberSkate_InputSource", 0)
+Native.setKeyboard = guard("CyberSkate_SetKeyboard", false)
+Native.score = guard("CyberSkate_Score", {})
+Native.trick = guard("CyberSkate_Trick", "")
+
+-- Indices into CyberSkate_Score (1-based).
+Native.S = {
+    active = 1, sequence = 2, multiplier = 3, total = 4,
+    tricks = 5, landings = 6, lastLanding = 7, bails = 8,
+}
+Native.INPUT = { none = 0, controller = 1, keyboard = 2 }
 
 return Native

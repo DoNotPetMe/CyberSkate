@@ -50,6 +50,15 @@ impl Frame {
         }
     }
 
+    /// The frame `t` of the way from `self` to `to`.
+    pub fn lerp(&self, to: &Frame, t: f32) -> Frame {
+        Frame {
+            position: self.position.lerp(to.position, t),
+            forward: self.forward.lerp(to.forward, t).normalize_or(to.forward),
+            up: self.up.lerp(to.up, t).normalize_or(to.up),
+        }
+    }
+
     /// Horizontal heading of `forward`, radians counter-clockwise from +y
     /// seen from above.
     pub fn yaw(&self) -> f32 {
@@ -127,6 +136,27 @@ mod tests {
         assert!((up.rotation() * Vec3::Y).distance(up.forward) < 1e-5);
         assert!((up.rotation() * Vec3::Z).distance(up.up) < 1e-5);
         assert!((west.rotation() * Vec3::X).distance(Vec3::Y) < 1e-5);
+    }
+
+    #[test]
+    fn lerp_meets_both_ends_and_stays_unit() {
+        let a = Frame::IDENTITY;
+        let b = Frame {
+            position: Vec3::new(2., 0., 0.),
+            forward: Vec3::X,
+            up: Vec3::Z,
+        };
+        assert_eq!(a.lerp(&b, 0.), a);
+        assert!(a.lerp(&b, 1.).forward.distance(Vec3::X) < 1e-6);
+        let mid = a.lerp(&b, 0.5);
+        assert!(mid.position.distance(Vec3::new(1., 0., 0.)) < 1e-6);
+        assert!((mid.forward.length() - 1.).abs() < 1e-6);
+        // Opposite directions have no midpoint; the destination is kept.
+        let back = Frame {
+            forward: -Vec3::Y,
+            ..a
+        };
+        assert_eq!(a.lerp(&back, 0.5).forward, -Vec3::Y);
     }
 
     #[test]

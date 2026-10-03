@@ -9,9 +9,19 @@ local Rider = {
     frame = nil,
     speed = 0,
     skaterState = "",
+    -- Skate 3's scoring (CyberSkate_Score), the running trick's name, what
+    -- drives the skater (Native.INPUT) and the landings/bails to flash.
+    score = nil,
+    trick = "",
+    input = 0,
+    popups = {},
+    clock = 0,
 }
 
 local F = Native.F
+local S = Native.S
+local POPUP_SECONDS = 2.5
+local counted = nil
 local EYE = 1.65
 local ENTER_TIMEOUT = 5.0
 
@@ -152,6 +162,7 @@ function Rider.init(current)
     prepareRestrictions()
     if Native.probe() then
         Native.start(settings.assetsPath or "")
+        Native.setKeyboard(settings.keyboard)
     end
 end
 
@@ -162,6 +173,41 @@ function Rider.restart(current)
     end
     if Native.probe() then
         Native.start(settings.assetsPath or "")
+        Native.setKeyboard(settings.keyboard)
+    end
+end
+
+local function popup(text, r, g, b)
+    Rider.popups[#Rider.popups + 1] = { text = text, color = { r, g, b }, untilClock = Rider.clock + POPUP_SECONDS }
+end
+
+-- Landings and bails since the last frame become pop-ups; the running
+-- sequence's trick and points are kept for the HUD.
+local function scoring(dt)
+    Rider.clock = Rider.clock + dt
+    local kept = {}
+    for _, p in ipairs(Rider.popups) do
+        if p.untilClock > Rider.clock then
+            kept[#kept + 1] = p
+        end
+    end
+    Rider.popups = kept
+    local score = Native.score()
+    if #score < 8 then
+        return
+    end
+    if counted then
+        if score[S.landings] > counted.landings then
+            popup(("+%s"):format(math.floor(score[S.lastLanding] + 0.5)), 0.45, 1, 0.55)
+        end
+        if score[S.bails] > counted.bails then
+            popup("Bail!", 1, 0.4, 0.3)
+        end
+    end
+    counted = { landings = score[S.landings], bails = score[S.bails] }
+    Rider.score = score
+    if score[S.active] == 1 then
+        Rider.trick = Native.trick()
     end
 end
 
@@ -218,6 +264,10 @@ function Rider.enter()
     saveCamera(p)
     Rider.state = "entering"
     Rider.message = ""
+    Rider.popups = {}
+    Rider.score = nil
+    Rider.trick = ""
+    counted = nil
     enterClock = 0
     lastSequence = -1
     headRest = nil
@@ -382,6 +432,8 @@ function Rider.update(dt)
             return
         end
     end
+    Rider.input = Native.inputSource()
+    scoring(dt)
     view(p, f)
     rescan(f, dt)
 end
