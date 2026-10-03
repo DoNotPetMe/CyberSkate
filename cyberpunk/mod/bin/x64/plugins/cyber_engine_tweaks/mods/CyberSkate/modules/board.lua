@@ -1,17 +1,24 @@
--- A board entity riding Skate 3's deck: spawned with Codeware's
--- DynamicEntitySystem when V gets on, placed on the deck every frame, and
--- deleted on the way off. The entity's own axes must be the deck's: x right,
--- y nose, z up.
+-- A board entity riding Skate 3's deck: spawned when V gets on, placed on
+-- the deck every frame, and deleted on the way off. The entity's own axes
+-- must be the deck's: x right, y nose, z up.
+--
+-- Spawning takes the template path as a plain string through the game's
+-- WorldFunctionalTests, which every CET prop spawner uses; Codeware's
+-- DynamicEntitySystem is the fallback.
 local Native = require("modules/native")
 
-local Board = { id = nil, warned = false, status = "no board entity set", path = "" }
+local Board = { status = "get on the board to check", path = "" }
 
 local F = Native.F
 local TAG = "CyberSkateBoard"
+local id = nil
+local via = nil
+local waited = 0
+local reported = false
 
-local function system()
-    local ok, s = pcall(function() return Game.GetDynamicEntitySystem() end)
-    return ok and s or nil
+local function report(text)
+    Board.status = text
+    print("[CyberSkate] board: " .. text)
 end
 
 local function placement(f)
@@ -19,70 +26,104 @@ local function placement(f)
     return Vector4.new(f[F.deck], f[F.deck + 1], f[F.deck + 2], 1), q
 end
 
+local function clean(path)
+    path = (path or ""):gsub('"', ""):gsub("/", "\\")
+    path = path:match("[Aa]rchive\\(.+)$") or path
+    return path:match("^%s*(.-)%s*$")
+end
+
+local function find()
+    if not id then
+        return nil
+    end
+    local ok, entity = pcall(function()
+        if via == "codeware" then
+            return Game.GetDynamicEntitySystem():GetEntity(id)
+        end
+        return Game.FindEntityByID(id)
+    end)
+    return ok and entity or nil
+end
+
 function Board.spawn(settings, f)
     Board.despawn()
-    -- A pasted Windows path is cut down to the part inside the archive:
-    -- quotes and everything up to "archive\" go, slashes become backslashes.
-    local path = (settings.boardEntity or ""):gsub('"', ""):gsub("/", "\\")
-    path = path:match("[Aa]rchive\\(.+)$") or path
-    path = path:match("^%s*(.-)%s*$")
+    local path = clean(settings.boardEntity)
     Board.path = path
+    waited, reported = 0, false
     if path == "" then
         Board.status = "no board entity set"
         return
     end
-    local s = system()
-    if not s then
-        Board.status = "Codeware is not installed (needed to draw the board)"
+    local position, orientation = placement(f)
+    local errors = {}
+    local ok, result = pcall(function()
+        local transform = WorldTransform.new()
+        transform:SetPosition(position)
+        transform:SetOrientation(orientation)
+        return WorldFunctionalTests.SpawnEntity(path, transform, "")
+    end)
+    if ok and result then
+        id, via = result, "game"
+        report("spawning " .. path)
         return
     end
-    local ok, err = pcall(function()
-        local position, orientation = placement(f)
+    errors[#errors + 1] = "game spawner: " .. tostring(result)
+    ok, result = pcall(function()
         local spec = DynamicEntitySpec.new()
-        local ok_ref, ref = pcall(function() return ResRef.FromString(path) end)
-        spec.templatePath = ok_ref and ref or path
+        spec.templatePath = ResRef.FromString(path)
         spec.position = position
         spec.orientation = orientation
         spec.alwaysSpawned = true
         spec.spawnInView = true
         spec.tags = { TAG }
-        Board.id = s:CreateEntity(spec)
+        return Game.GetDynamicEntitySystem():CreateEntity(spec)
     end)
-    if ok then
-        Board.status = "spawning " .. path
-        Board.waited = 0
-    else
-        Board.status = "could not spawn " .. path .. ": " .. tostring(err)
+    if ok and result then
+        id, via = result, "codeware"
+        report("spawning " .. path .. " (through Codeware)")
+        return
     end
-    print("[CyberSkate] board: " .. Board.status)
+    errors[#errors + 1] = "Codeware: " .. tostring(result)
+    report("could not spawn " .. path .. " (" .. table.concat(errors, "; ") .. ")")
 end
 
 function Board.update(f, dt)
-    if not Board.id then
+    if not id then
         return
     end
-    pcall(function()
-        local entity = system():GetEntity(Board.id)
-        if not entity then
-            Board.waited = (Board.waited or 0) + (dt or 0)
-            if Board.waited > 3 and not Board.status:find("not found") then
-                Board.status = "spawned nothing after 3 s: is the WolvenKit project installed, and is " .. Board.path .. " its .ent?"
-                print("[CyberSkate] board: " .. Board.status)
-            end
-        else
-            Board.status = "on the deck"
-            local position, orientation = placement(f)
-            Game.GetTeleportationFacility():Teleport(entity, position, orientation:ToEulerAngles())
+    local entity = find()
+    if not entity then
+        waited = waited + (dt or 0)
+        if waited > 3 and not reported then
+            reported = true
+            report("the game spawned nothing for " .. Board.path .. " after 3 s")
         end
+        return
+    end
+    if Board.status ~= "on the deck" then
+        report("on the deck")
+    end
+    pcall(function()
+        local position, orientation = placement(f)
+        Game.GetTeleportationFacility():Teleport(entity, position, orientation:ToEulerAngles())
     end)
 end
 
 function Board.despawn()
-    local s = system()
-    if s then
-        pcall(function() s:DeleteTagged(TAG) end)
+    if id then
+        pcall(function()
+            if via == "codeware" then
+                Game.GetDynamicEntitySystem():DeleteEntity(id)
+            else
+                local entity = Game.FindEntityByID(id)
+                if entity then
+                    WorldFunctionalTests.DespawnEntity(entity)
+                end
+            end
+        end)
     end
-    Board.id = nil
+    pcall(function() Game.GetDynamicEntitySystem():DeleteTagged(TAG) end)
+    id, via = nil, nil
 end
 
 return Board
