@@ -98,6 +98,21 @@ jobs:
             -Converter '${{ steps.converter.outputs.exe }}' `
             -ConverterLicenses $licenses `
             -Out "$env:RUNNER_TEMP\CyberSkate"
+      - name: Install into a stand-in game folder
+        shell: pwsh
+        run: |
+          $game = Join-Path $env:RUNNER_TEMP 'Cyberpunk 2077'
+          foreach ($file in 'bin\x64\Cyberpunk2077.exe', 'red4ext\RED4ext.dll', 'bin\x64\plugins\cyber_engine_tweaks.asi') {
+            New-Item -ItemType File -Force (Join-Path $game $file) | Out-Null
+          }
+          & "$env:RUNNER_TEMP\CyberSkate\Install-CyberSkate.ps1" -Game $game -SkipSkate -NoPrompt
+          if ($LASTEXITCODE) { throw "installer exited with $LASTEXITCODE" }
+          foreach ($file in 'bin\x64\plugins\cyber_engine_tweaks\mods\CyberSkate\init.lua',
+                            'bin\x64\plugins\cyber_engine_tweaks\mods\CyberSkate\modules\rider.lua',
+                            'red4ext\plugins\CyberSkate\CyberSkate.dll',
+                            'red4ext\plugins\CyberSkate\Setup-CyberSkate.ps1') {
+            if (-not (Test-Path -LiteralPath (Join-Path $game $file))) { throw "installer left out $file" }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: CyberSkate

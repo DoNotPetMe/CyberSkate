@@ -23,17 +23,33 @@ Cyberpunk 2077 (PC) and Skate 3 (Xbox 360, extracted).
 
 1. Download the `CyberSkate` artifact from the latest successful
    [CyberSkate workflow run](../../../actions/workflows/cyberskate.yml) and
-   extract it **into your Cyberpunk 2077 folder** (the one with `bin`, `r6`
-   and `red4ext`). It adds:
-   - `red4ext/plugins/CyberSkate/CyberSkate.dll`, the plugin with the
-     Skate 3 engine
-   - `red4ext/plugins/CyberSkate/converter/`, the Skate 3 converter
-   - `bin/x64/plugins/cyber_engine_tweaks/mods/CyberSkate/`, the CET mod
-2. Run `red4ext/plugins/CyberSkate/Setup-CyberSkate.bat` and select your
-   Skate 3 `default.xex`. It writes what skating needs into
+   extract it anywhere.
+2. Run **`Install-CyberSkate.bat`** from it. It finds Cyberpunk 2077 (Steam,
+   GOG or Epic; otherwise it asks), copies the mod into the game, checks that
+   RED4ext and CET are installed, and asks for your Skate 3 `default.xex`
+   (its `data` folder beside it) to convert what skating needs into
    `red4ext/plugins/CyberSkate/skate-data/`. Your game folders are only read.
+   It ends with a list of anything still missing.
 3. Start the game. In the CET overlay, **Bindings → CyberSkate → Toggle
-   skateboard** (J matches the MW2 mode), or click **both sticks in**.
+   skateboard** (J matches the MW2 mode), or click **both sticks in at the
+   same time**.
+
+Installing by hand: the zip's `bin` and `red4ext` folders go directly into
+the game folder, merging with the ones there, so that
+`bin/x64/plugins/cyber_engine_tweaks/mods/CyberSkate/init.lua` and
+`red4ext/plugins/CyberSkate/CyberSkate.dll` exist; then run
+`red4ext/plugins/CyberSkate/Setup-CyberSkate.bat`.
+
+### Troubleshooting
+
+| what you see | why |
+|---|---|
+| no **CyberSkate** under CET's Bindings | CET did not find the mod: `…/mods/CyberSkate/init.lua` is not where it should be (a common slip is a `Cyberpunk 2077/CyberSkate/bin/…` folder). Run the installer, then **Reload all mods**. If it is in place, `…/mods/CyberSkate/CyberSkate.log` says why it did not load. |
+| HUD: *plugin is not loaded* | RED4ext did not load `CyberSkate.dll`: check `red4ext/logs` and restart the game after installing. |
+| HUD: *Skate 3 is unavailable: error …* | the Skate 3 data is missing or incomplete: run `Setup-CyberSkate.bat` again. |
+
+The CET console prints a `[CyberSkate]` line at start-up with the plugin
+version and where it looks for the Skate 3 data.
 
 ## Riding
 

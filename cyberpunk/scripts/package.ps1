@@ -1,5 +1,5 @@
-# Lays out the CyberSkate release: a folder to extract into the Cyberpunk 2077
-# folder, next to bin\ and r6\.
+# Lays out the CyberSkate release: Install-CyberSkate.bat at the top, and the
+# bin\ and red4ext\ folders it copies into the Cyberpunk 2077 folder.
 #
 #   pwsh cyberpunk/scripts/package.ps1 -Plugin <CyberSkate.dll> -Out <folder>
 #       [-Converter <iw4l-skate-convert.exe>] [-ConverterLicenses <files>]
@@ -16,6 +16,7 @@ $repo = Split-Path -Parent $cyberpunk
 Remove-Item -Recurse -Force $Out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $Out | Out-Null
 Copy-Item -Recurse -Force (Join-Path $cyberpunk 'mod\*') $Out
+Copy-Item -Force (Join-Path $cyberpunk 'installer\*') $Out
 
 $plugin_dir = Join-Path $Out 'red4ext\plugins\CyberSkate'
 Copy-Item -LiteralPath $Plugin -Destination (Join-Path $plugin_dir 'CyberSkate.dll')
