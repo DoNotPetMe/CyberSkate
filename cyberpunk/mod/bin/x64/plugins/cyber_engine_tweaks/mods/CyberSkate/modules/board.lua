@@ -21,7 +21,11 @@ end
 
 function Board.spawn(settings, f)
     Board.despawn()
-    local path = settings.boardEntity or ""
+    -- A pasted Windows path is cut down to the part inside the archive:
+    -- quotes and everything up to "archive\" go, slashes become backslashes.
+    local path = (settings.boardEntity or ""):gsub('"', ""):gsub("/", "\\")
+    path = path:match("[Aa]rchive\\(.+)$") or path
+    path = path:match("^%s*(.-)%s*$")
     if path == "" then
         return
     end
