@@ -20,6 +20,9 @@ local defaults = {
     -- behind until the next scan, about a second.
     solidVehicles = true,
     showHud = true,
+    -- An entity template (.ent) drawn on Skate 3's deck; needs Codeware.
+    -- Empty: no board is drawn.
+    boardEntity = "",
     -- Restrictions held on V while skating, so the controller only skates.
     restrictions = {
         "NoMovement", "NoJump", "NoSprint", "NoCombat", "NoCameraControl",

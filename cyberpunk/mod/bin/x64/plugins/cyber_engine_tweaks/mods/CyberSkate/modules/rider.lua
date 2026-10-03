@@ -2,6 +2,7 @@
 -- the plugin simulates Skate 3.
 local Native = require("modules/native")
 local Scanner = require("modules/scanner")
+local Board = require("modules/board")
 
 local Rider = {
     state = "off", -- off | entering | riding
@@ -115,6 +116,36 @@ local function restoreCamera(p)
 end
 
 -- Hamilton product a * b of {i, j, k, r} quaternions.
+-- First-person V has no head. In chase view the full third-person head is
+-- swapped into the head slot, as third-person camera mods do, and the
+-- first-person one put back on the way out.
+local headSwapped = false
+local function heads(p)
+    local gender = protected(function() return p:GetResolvedGenderName().value end)
+    local w = (gender == "Female") and "Wa" or "Ma"
+    return "Items.Player" .. w .. "TppHead", "Items.Player" .. w .. "FppHead"
+end
+
+local function swapHead(p, tpp)
+    if tpp == headSwapped then
+        return
+    end
+    local ok = pcall(function()
+        local ts = Game.GetTransactionSystem()
+        local tppHead, fppHead = heads(p)
+        local wanted = ItemID.FromTDBID(TweakDBID.new(tpp and tppHead or fppHead))
+        local slot = TweakDBID.new("AttachmentSlots.TppHead")
+        ts:RemoveItemFromSlot(p, slot, true, true, true)
+        ts:GiveItem(p, wanted, 1)
+        ts:AddItemToSlot(p, slot, wanted)
+    end)
+    if ok then
+        headSwapped = tpp
+    else
+        print("[CyberSkate] could not swap V's head for the chase view")
+    end
+end
+
 local function multiply(a, b)
     return Quaternion.new(
         a.r * b.i + a.i * b.r + a.j * b.k - a.k * b.j,
@@ -216,7 +247,9 @@ function Rider.reset(p)
     if p then
         restrict(p, false)
         restoreCamera(p)
+        swapHead(p, false)
     end
+    Board.despawn()
     if Rider.state ~= "off" then
         Native.deactivate()
     end
@@ -279,7 +312,9 @@ function Rider.exit(reason)
     Scanner.cancel()
     if p then
         restoreCamera(p)
+        swapHead(p, false)
         restrict(p, false)
+        Board.despawn()
         local f = Rider.frame
         if f then
             local yaw = Scanner.yaw(f[F.skaterForward], f[F.skaterForward + 1])
@@ -418,6 +453,8 @@ function Rider.update(dt)
     if Rider.state == "entering" then
         Rider.state = "riding"
         restrict(p, true)
+        swapHead(p, settings.camera == "chase")
+        Board.spawn(settings, f)
     end
     Rider.frame = f
     if f[F.sequence] ~= lastSequence then
@@ -435,6 +472,7 @@ function Rider.update(dt)
     Rider.input = Native.inputSource()
     scoring(dt)
     view(p, f)
+    Board.update(f)
     rescan(f, dt)
 end
 

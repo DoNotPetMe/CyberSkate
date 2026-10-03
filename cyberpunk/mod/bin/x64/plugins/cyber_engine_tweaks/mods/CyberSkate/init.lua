@@ -163,6 +163,7 @@ local function window(settings)
     end
     settings.solidVehicles = ImGui.Checkbox("Cars are solid (traffic may leave ghosts)", settings.solidVehicles)
     settings.showHud = ImGui.Checkbox("Show HUD", settings.showHud)
+    settings.boardEntity = ImGui.InputText("Board entity (.ent)", settings.boardEntity, 512)
 
     if ImGui.CollapsingHeader("World scan") then
         local s = settings.scan
