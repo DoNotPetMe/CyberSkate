@@ -25,6 +25,8 @@ pub struct Pose {
     pub bones: Vec<Mat4>,
     pub names: Vec<String>,
     pub camera: Option<(Vec3, Mat3, f32)>,
+    /// The deck body's frame: columns right, up, forward and its position.
+    pub deck: Mat4,
     pub velocity: Vec3,
     pub tick: u64,
     pub state: String,
@@ -159,9 +161,11 @@ impl Session {
         self.advance_published()
     }
     pub fn pose(&self) -> Pose {
-        let v = self.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()]
+        let deck_id = skate_core::physics::board::BodyId::Deck;
+        let v = self.physics.board.bodies()[deck_id.index()]
             .rates
             .linear_velocity;
+        let deck = self.physics.board.body_transform(deck_id);
         Pose {
             root: crate::animation::native_matrix(
                 self.skater.animated_skeleton.roots.animation_to_world,
@@ -180,6 +184,12 @@ impl Session {
                     f.field_of_view_degrees,
                 )
             }),
+            deck: Mat4::from_cols(
+                Vec3::from_array(deck.basis.columns[0]).extend(0.),
+                Vec3::from_array(deck.basis.columns[1]).extend(0.),
+                Vec3::from_array(deck.basis.columns[2]).extend(0.),
+                Vec3::new(deck.translation.x, deck.translation.y, deck.translation.z).extend(1.),
+            ),
             velocity: Vec3::new(v.x, v.y, v.z),
             tick: self.physics.ticks,
             state: format!("{:?}", self.skater.player_state.current()),
@@ -199,6 +209,17 @@ pub struct CollisionBuilder {
 }
 
 impl CollisionBuilder {
+    /// A builder with a stand-in floor material, for checking geometry
+    /// without loading a session's data.
+    pub fn standalone() -> Self {
+        Self {
+            material: skate_core::physics::contact::RetailContactMaterial {
+                static_friction: 0.8,
+                dynamic_friction: 0.8,
+                restitution: 0.,
+            },
+        }
+    }
     pub fn build(
         &self,
         triangles: Vec<[[f32; 3]; 3]>,

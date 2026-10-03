@@ -1,0 +1,98 @@
+# Skate 3 in Cyberpunk 2077: the adapter's tests, the RED4ext plugin, the
+# Skate 3 converter and the installable mod folder.
+name: CyberSkate
+
+on:
+  push:
+    paths:
+      - "cyberpunk/**"
+      - "skate/**"
+      - ".github/workflows/cyberskate.yml"
+  pull_request:
+    paths:
+      - "cyberpunk/**"
+      - "skate/**"
+      - ".github/workflows/cyberskate.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The revision of SK8-ENGINE/skate-3-rust-engine that skate/crates came from.
+  SKATE_ENGINE_REVISION: cb7968930f14dad38457e98720d1a274e469eec2
+
+jobs:
+  adapter:
+    name: Adapter tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cyberpunk
+      - name: Test the Cyberpunk adapter
+        working-directory: cyberpunk
+        run: cargo test --release -p cyberskate
+      - name: Check the CET mod's Lua
+        run: |
+          sudo apt-get install -y luajit
+          find cyberpunk/mod -name '*.lua' -print0 | xargs -0 -n1 luajit -bl > /dev/null
+
+  windows:
+    name: Plugin and mod package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cyberpunk
+      - name: Build the RED4ext plugin
+        working-directory: cyberpunk
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: cargo build --release -p cyberskate-red4ext
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build the Skate 3 converter
+        id: converter
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $engine = Join-Path $env:RUNNER_TEMP 'skate-engine'
+          git init -q $engine
+          git -C $engine remote add origin https://github.com/SK8-ENGINE/skate-3-rust-engine
+          git -C $engine fetch -q --depth 1 origin $env:SKATE_ENGINE_REVISION
+          git -C $engine checkout -q FETCH_HEAD
+          python -m pip install -r (Join-Path $engine 'tools\requirements-setup.txt')
+          $out = Join-Path $env:RUNNER_TEMP 'converter'
+          ./skate/converter/build.ps1 -SkateEngine $engine -Out $out
+          $site = python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"
+          $licenses = @(
+            (Join-Path (Split-Path (Get-Command python).Source) 'LICENSE.txt')
+            (Get-ChildItem "$site\numpy-*.dist-info" -Recurse -File -Filter 'LICENSE*' | Select-Object -First 1).FullName
+            (Get-ChildItem "$site\pillow-*.dist-info" -Recurse -File -Filter 'LICENSE*' | Select-Object -First 1).FullName
+          ) + (Get-ChildItem (Join-Path $engine 'tools\vendor') -Recurse -File -Filter 'LICENSE*').FullName
+          $staged = Join-Path $env:RUNNER_TEMP 'converter-licenses'
+          New-Item -ItemType Directory -Force $staged | Out-Null
+          foreach ($license in $licenses | Where-Object { $_ }) {
+            $name = (Split-Path (Split-Path $license -Parent) -Leaf) + '-' + (Split-Path $license -Leaf)
+            Copy-Item $license (Join-Path $staged $name)
+          }
+          "exe=$out\iw4l-skate-convert.exe" >> $env:GITHUB_OUTPUT
+          "licenses=$staged" >> $env:GITHUB_OUTPUT
+      - name: Package
+        shell: pwsh
+        run: |
+          $licenses = @()
+          if ('${{ steps.converter.outputs.licenses }}') {
+            $licenses = (Get-ChildItem '${{ steps.converter.outputs.licenses }}' -File).FullName
+          }
+          ./cyberpunk/scripts/package.ps1 `
+            -Plugin cyberpunk/target/release/CyberSkate.dll `
+            -Converter '${{ steps.converter.outputs.exe }}' `
+            -ConverterLicenses $licenses `
+            -Out "$env:RUNNER_TEMP\CyberSkate"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CyberSkate
+          path: ${{ runner.temp }}/CyberSkate

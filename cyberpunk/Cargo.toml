@@ -1,0 +1,23 @@
+# Skate 3 in Cyberpunk 2077: the skate engine under `skate/` hosted by a
+# RED4ext plugin, driven from a Cyber Engine Tweaks mod. Its own workspace:
+# the plugin only builds for x86_64-pc-windows-msvc, the adapter anywhere.
+[workspace]
+resolver = "3"
+members = ["crates/cyberskate", "crates/cyberskate-red4ext"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+bevy = { version = "0.19", default-features = false, features = ["std"] }
+skate-host = { path = "../skate/crates/skate-host" }
+cyberskate = { path = "crates/cyberskate" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+panic = "unwind"
+debug = "line-tables-only"

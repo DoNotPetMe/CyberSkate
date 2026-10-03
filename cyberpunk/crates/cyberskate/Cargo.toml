@@ -1,0 +1,11 @@
+[package]
+name = "cyberskate"
+description = "Hosts the Skate 3 engine for Cyberpunk 2077: world scans to collision and rails, the skate worker, and poses in Night City coordinates."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy.workspace = true
+skate-host.workspace = true

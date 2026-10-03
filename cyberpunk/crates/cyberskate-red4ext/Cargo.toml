@@ -1,0 +1,19 @@
+[package]
+name = "cyberskate-red4ext"
+description = "RED4ext plugin putting the Skate 3 engine inside Cyberpunk 2077."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "CyberSkate"
+crate-type = ["cdylib"]
+
+[dependencies]
+cyberskate.workspace = true
+bevy.workspace = true
+
+# The plugin is a Windows DLL loaded by RED4ext; elsewhere this crate is empty.
+[target.'cfg(windows)'.dependencies]
+red4ext-rs = { git = "https://github.com/jac3km4/red4ext-rs", rev = "d419d98d8b81a19a62585d11759fabdeabeb0957", features = ["log"] }
