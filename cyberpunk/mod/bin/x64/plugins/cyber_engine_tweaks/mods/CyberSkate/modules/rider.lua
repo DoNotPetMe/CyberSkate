@@ -114,20 +114,35 @@ local function multiply(a, b)
     )
 end
 
+-- A query this game version lacks fails once, says so, and is not asked
+-- again: CET logs every call to a missing function.
+local missing = {}
+local function optional(name, f)
+    if missing[name] then
+        return nil
+    end
+    local ok, result = pcall(f)
+    if not ok then
+        missing[name] = true
+        print("[CyberSkate] " .. name .. " is unavailable: " .. tostring(result))
+        return nil
+    end
+    return result
+end
+
 local function inVehicle(p)
-    return protected(function()
+    return optional("GetMountedVehicle", function()
         return Game.GetMountedVehicle(p) ~= nil
     end) == true
 end
 
 function Rider.paused()
-    local paused = protected(function()
+    if optional("IsGamePaused", function()
         return Game.GetSystemRequestsHandler():IsGamePaused()
-    end)
-    if paused then
+    end) then
         return true
     end
-    return protected(function()
+    return optional("IsPausedState", function()
         return Game.GetTimeSystem():IsPausedState()
     end) == true
 end
@@ -321,7 +336,7 @@ function Rider.update(dt)
         Rider.reset(nil)
         return
     end
-    if protected(function() return p:IsDead() end) then
+    if optional("IsDead", function() return p:IsDead() end) then
         Rider.exit("")
         return
     end
