@@ -222,6 +222,70 @@ fn upright(parts: &mut [Part]) {
     }
 }
 
+/// Per-vertex tangents (xyz, handedness w) from each triangle's UV layout,
+/// summed over the triangles a vertex is in and made orthogonal to its
+/// normal. WolvenKit refuses meshes without them.
+fn tangents(part: &Part) -> Vec<[f32; 4]> {
+    let n = part.positions.len();
+    let mut tan = vec![[0f32; 3]; n];
+    let mut bit = vec![[0f32; 3]; n];
+    for t in part.indices.chunks_exact(3) {
+        let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
+        if a >= n || b >= n || c >= n {
+            continue;
+        }
+        let (p, uv) = (&part.positions, &part.uvs);
+        let e1: [f32; 3] = std::array::from_fn(|i| p[b][i] - p[a][i]);
+        let e2: [f32; 3] = std::array::from_fn(|i| p[c][i] - p[a][i]);
+        let (du1, dv1) = (uv[b][0] - uv[a][0], uv[b][1] - uv[a][1]);
+        let (du2, dv2) = (uv[c][0] - uv[a][0], uv[c][1] - uv[a][1]);
+        let det = du1 * dv2 - du2 * dv1;
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let r = 1. / det;
+        let t: [f32; 3] = std::array::from_fn(|i| (e1[i] * dv2 - e2[i] * dv1) * r);
+        let s: [f32; 3] = std::array::from_fn(|i| (e2[i] * du1 - e1[i] * du2) * r);
+        for v in [a, b, c] {
+            for i in 0..3 {
+                tan[v][i] += t[i];
+                bit[v][i] += s[i];
+            }
+        }
+    }
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    (0..n)
+        .map(|v| {
+            let nrm = part.normals[v];
+            let d = dot(nrm, tan[v]);
+            let mut t: [f32; 3] = std::array::from_fn(|i| tan[v][i] - nrm[i] * d);
+            let mut l = dot(t, t).sqrt();
+            if l < 1e-6 {
+                // No usable UV gradient: any direction across the normal.
+                t = if nrm[0].abs() < 0.9 {
+                    cross(nrm, [1., 0., 0.])
+                } else {
+                    cross(nrm, [0., 1., 0.])
+                };
+                l = dot(t, t).sqrt().max(1e-6);
+            }
+            let w = if dot(cross(nrm, t), bit[v]) < 0. {
+                -1.
+            } else {
+                1.
+            };
+            [t[0] / l, t[1] / l, t[2] / l, w]
+        })
+        .collect()
+}
+
 fn write(source: &Glb<'_>, parts: &[Part]) -> Result<Vec<u8>, String> {
     let mut blob = Vec::<u8>::new();
     let mut views = Vec::new();
@@ -270,6 +334,9 @@ fn write(source: &Glb<'_>, parts: &[Part]) -> Result<Vec<u8>, String> {
         let nv = push(floats(&flat(&part.normals)), &mut blob);
         accessors.push(json!({"bufferView": nv, "componentType": 5126, "count": part.normals.len(), "type": "VEC3"}));
         let uv_flat: Vec<f32> = part.uvs.iter().flatten().copied().collect();
+        let tangents: Vec<f32> = tangents(part).into_iter().flatten().collect();
+        let tv = push(floats(&tangents), &mut blob);
+        accessors.push(json!({"bufferView": tv, "componentType": 5126, "count": part.positions.len(), "type": "VEC4"}));
         let uvv = push(floats(&uv_flat), &mut blob);
         accessors.push(json!({"bufferView": uvv, "componentType": 5126, "count": part.uvs.len(), "type": "VEC2"}));
         let iv = push(
@@ -277,10 +344,10 @@ fn write(source: &Glb<'_>, parts: &[Part]) -> Result<Vec<u8>, String> {
             &mut blob,
         );
         accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": part.indices.len(), "type": "SCALAR"}));
-        let base = accessors.len() - 4;
+        let base = accessors.len() - 5;
         prims.push(json!({
-            "attributes": {"POSITION": base, "NORMAL": base + 1, "TEXCOORD_0": base + 2},
-            "indices": base + 3,
+            "attributes": {"POSITION": base, "NORMAL": base + 1, "TANGENT": base + 2, "TEXCOORD_0": base + 3},
+            "indices": base + 4,
             "material": materials.len() - 1
         }));
     }
