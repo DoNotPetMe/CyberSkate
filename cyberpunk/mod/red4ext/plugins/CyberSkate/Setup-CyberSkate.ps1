@@ -33,6 +33,10 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host 'The conversion failed; the converter said why above.'
     exit $LASTEXITCODE
 }
+$board_tool = Join-Path $here 'cyberskate-board.exe'
+if (Test-Path -LiteralPath $board_tool) {
+    & $board_tool (Join-Path $out 'assets') (Join-Path $out 'board.glb')
+}
 Write-Host ''
 Write-Host "Skate 3 data ready in $out\assets"
 Write-Host 'Start Cyberpunk 2077 and bind "Toggle skateboard" in the CET overlay, or click both sticks in.'

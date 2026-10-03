@@ -3,7 +3,7 @@
 # the plugin only builds for x86_64-pc-windows-msvc, the adapter anywhere.
 [workspace]
 resolver = "3"
-members = ["crates/cyberskate", "crates/cyberskate-red4ext"]
+members = ["crates/cyberskate", "crates/cyberskate-red4ext", "crates/cyberskate-board"]
 
 [workspace.package]
 version = "0.1.0"

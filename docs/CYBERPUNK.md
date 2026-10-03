@@ -88,6 +88,33 @@ The default view is first person, turned to where Skate 3's camera looks,
 dipping as the skater crouches. **Skate 3 chase** moves the view to Skate 3's
 camera behind the skater (experimental: V is drawn as the first-person body).
 
+## The board
+
+The Skate 3 board is drawn as a Cyberpunk entity that the mod places on
+Skate 3's deck every frame (needs [Codeware](https://github.com/psiberx/cp2077-codeware)).
+The board model comes from your own Skate 3, so it is built on your PC:
+
+1. **Export it.** Setup writes `red4ext/plugins/CyberSkate/skate-data/board.glb`.
+   If you converted before this existed, run `Export-Board.bat` in that folder.
+   It prints which bone it used as the deck.
+2. **Build it in WolvenKit** (first time; this is the part most likely to need
+   adjusting, so report what you see):
+   1. *File → New Project*, name it `CyberSkateBoard`.
+   2. In the *Asset Browser*, find a small prop that has both a `.mesh` and an
+      `.ent` (search `.ent` plus a word like `crate`; any simple object works).
+      Right-click the `.mesh` and the `.ent` → *Add to project*.
+   3. Copy `board.glb` into the project's `raw` folder at the same path as the
+      `.mesh`, with the same file name but `.glb`.
+   4. *Tools → Import Tool*, select `board.glb`, *Import*: the prop's mesh is
+      replaced by the board.
+   5. *Build → Install* (or *Pack*) to put the project's `.archive` into the game.
+3. **Point the mod at it.** In the CET overlay's CyberSkate window, paste the
+   `.ent` path (right-click it in the project → *Copy relative path*) into
+   **Board entity**, and get on the board.
+
+The board keeps the prop's materials until its textures are imported too; the
+shape and its flips and grinds come from Skate 3.
+
 ## How it works
 
 | piece | where | what |

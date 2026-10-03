@@ -49,7 +49,7 @@ jobs:
         working-directory: cyberpunk
         env:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
-        run: cargo build --release -p cyberskate-red4ext
+        run: cargo build --release -p cyberskate-red4ext -p cyberskate-board
       - name: Check the plugin's RED4ext entry points
         shell: pwsh
         run: |
@@ -95,6 +95,7 @@ jobs:
           }
           ./cyberpunk/scripts/package.ps1 `
             -Plugin cyberpunk/target/release/CyberSkate.dll `
+            -BoardTool cyberpunk/target/release/cyberskate-board.exe `
             -Converter '${{ steps.converter.outputs.exe }}' `
             -ConverterLicenses $licenses `
             -Out "$env:RUNNER_TEMP\CyberSkate"

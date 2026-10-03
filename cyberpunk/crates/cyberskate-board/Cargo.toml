@@ -1,0 +1,10 @@
+[package]
+name = "cyberskate-board"
+description = "Exports the skateboard from the player's converted Skate 3 skater as a standalone board.glb in the deck's frame, for WolvenKit to import."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"

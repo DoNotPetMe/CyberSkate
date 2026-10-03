@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)] [string] $Plugin,
     [Parameter(Mandatory)] [string] $Out,
     [string] $Converter,
+    [string] $BoardTool,
     [string[]] $ConverterLicenses = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,10 @@ Copy-Item -Force (Join-Path $cyberpunk 'installer\*') $Out
 
 $plugin_dir = Join-Path $Out 'red4ext\plugins\CyberSkate'
 Copy-Item -LiteralPath $Plugin -Destination (Join-Path $plugin_dir 'CyberSkate.dll')
+
+if ($BoardTool) {
+    Copy-Item -LiteralPath $BoardTool -Destination (Join-Path $plugin_dir 'cyberskate-board.exe')
+}
 
 $licenses = Join-Path $plugin_dir 'licenses'
 New-Item -ItemType Directory -Force $licenses | Out-Null

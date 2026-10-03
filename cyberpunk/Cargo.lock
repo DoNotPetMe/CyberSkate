@@ -1297,6 +1297,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyberskate-board"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "cyberskate-red4ext"
 version = "0.1.0"
 dependencies = [
