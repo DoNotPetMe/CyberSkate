@@ -472,7 +472,7 @@ function Rider.update(dt)
     Rider.input = Native.inputSource()
     scoring(dt)
     view(p, f)
-    Board.update(f)
+    Board.update(f, dt)
     rescan(f, dt)
 end
 

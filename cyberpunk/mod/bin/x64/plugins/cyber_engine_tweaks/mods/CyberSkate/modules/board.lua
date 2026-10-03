@@ -4,7 +4,7 @@
 -- y nose, z up.
 local Native = require("modules/native")
 
-local Board = { id = nil, warned = false }
+local Board = { id = nil, warned = false, status = "no board entity set", path = "" }
 
 local F = Native.F
 local TAG = "CyberSkateBoard"
@@ -26,21 +26,21 @@ function Board.spawn(settings, f)
     local path = (settings.boardEntity or ""):gsub('"', ""):gsub("/", "\\")
     path = path:match("[Aa]rchive\\(.+)$") or path
     path = path:match("^%s*(.-)%s*$")
+    Board.path = path
     if path == "" then
+        Board.status = "no board entity set"
         return
     end
     local s = system()
     if not s then
-        if not Board.warned then
-            print("[CyberSkate] drawing the board needs Codeware")
-            Board.warned = true
-        end
+        Board.status = "Codeware is not installed (needed to draw the board)"
         return
     end
     local ok, err = pcall(function()
         local position, orientation = placement(f)
         local spec = DynamicEntitySpec.new()
-        spec.templatePath = ResRef.FromString(path)
+        local ok_ref, ref = pcall(function() return ResRef.FromString(path) end)
+        spec.templatePath = ok_ref and ref or path
         spec.position = position
         spec.orientation = orientation
         spec.alwaysSpawned = true
@@ -48,18 +48,29 @@ function Board.spawn(settings, f)
         spec.tags = { TAG }
         Board.id = s:CreateEntity(spec)
     end)
-    if not ok then
-        print("[CyberSkate] could not spawn the board " .. path .. ": " .. tostring(err))
+    if ok then
+        Board.status = "spawning " .. path
+        Board.waited = 0
+    else
+        Board.status = "could not spawn " .. path .. ": " .. tostring(err)
     end
+    print("[CyberSkate] board: " .. Board.status)
 end
 
-function Board.update(f)
+function Board.update(f, dt)
     if not Board.id then
         return
     end
     pcall(function()
         local entity = system():GetEntity(Board.id)
-        if entity then
+        if not entity then
+            Board.waited = (Board.waited or 0) + (dt or 0)
+            if Board.waited > 3 and not Board.status:find("not found") then
+                Board.status = "spawned nothing after 3 s: is the WolvenKit project installed, and is " .. Board.path .. " its .ent?"
+                print("[CyberSkate] board: " .. Board.status)
+            end
+        else
+            Board.status = "on the deck"
             local position, orientation = placement(f)
             Game.GetTeleportationFacility():Teleport(entity, position, orientation:ToEulerAngles())
         end

@@ -164,6 +164,7 @@ local function window(settings)
     settings.solidVehicles = ImGui.Checkbox("Cars are solid (traffic may leave ghosts)", settings.solidVehicles)
     settings.showHud = ImGui.Checkbox("Show HUD", settings.showHud)
     settings.boardEntity = ImGui.InputText("Board entity (.ent)", settings.boardEntity, 512)
+    ImGui.TextWrapped("Board: " .. require("modules/board").status)
 
     if ImGui.CollapsingHeader("World scan") then
         local s = settings.scan
