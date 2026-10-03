@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 /// Longest a rebuilt world waits for a grind to finish before it is
 /// installed anyway.
 const GRIND_DEFER: Duration = Duration::from_secs(2);
-/// Longest activation waits for the first scan to be built.
+/// Longest activation waits for the scan around its position to be built.
 const FIRST_COLLISION: Duration = Duration::from_secs(3);
 /// Simulation time owed beyond this is dropped rather than caught up.
 const MAX_BACKLOG: f32 = 0.15;
@@ -329,17 +329,25 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
                 epoch = new_epoch;
                 active = false;
                 accumulated = 0.;
-                if pending.is_none() && installed == 0 {
-                    let deadline = Instant::now() + FIRST_COLLISION;
-                    while pending.is_none() {
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        match built.recv_timeout(left) {
-                            Ok((g, Ok((prepared, info)))) => pending = Some((g, prepared, info)),
-                            Ok((_, Err(e))) => {
-                                lock(shared).notice = Some(format!("Scan skipped: {e}"));
+                // The world around the new position is the scan sent just
+                // before this activation; an older one may be anywhere.
+                let wanted = generation;
+                let deadline = Instant::now() + FIRST_COLLISION;
+                while pending.as_ref().map_or(installed, |(g, _, _)| *g) < wanted {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match built.recv_timeout(left) {
+                        Ok((g, Ok((prepared, info)))) => {
+                            if g > installed {
+                                pending = Some((g, prepared, info));
                             }
-                            Err(_) => break,
                         }
+                        Ok((g, Err(e))) => {
+                            lock(shared).notice = Some(format!("Scan skipped: {e}"));
+                            if g >= wanted {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
                     }
                 }
                 if let Some((g, prepared, info)) = pending.take() {
@@ -347,8 +355,8 @@ fn simulate(root: &Path, jobs: mpsc::Receiver<Job>, shared: &Mutex<Shared>) -> R
                     installed = g;
                     lock(shared).collision = info;
                 }
-                if installed == 0 {
-                    lock(shared).notice = Some("No ground scanned around the player yet.".into());
+                if installed == 0 || installed < wanted {
+                    lock(shared).notice = Some("The ground here could not be scanned.".into());
                     continue;
                 }
                 let heading = coords::heading(forward).unwrap_or(0.);
@@ -439,4 +447,32 @@ fn publish(
     };
     lock(shared).frame = Some(frame);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_skate_data_fails_with_a_reason() {
+        let root = std::env::temp_dir().join("cyberskate-no-data");
+        let mut runtime = Runtime::start(&root).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            match runtime.status() {
+                Status::Loading if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                other => break other,
+            }
+        };
+        match status {
+            Status::Failed(e) => assert!(e.contains("cyberskate-no-data"), "{e}"),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+        assert!(runtime.frame().is_none());
+        // A dead engine takes no more work, without panicking the caller.
+        assert!(!runtime.activate(Vec3::ZERO, Vec3::Y));
+        assert!(!runtime.step(0.016));
+    }
 }

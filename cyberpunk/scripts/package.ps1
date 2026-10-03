@@ -24,6 +24,7 @@ $licenses = Join-Path $plugin_dir 'licenses'
 New-Item -ItemType Directory -Force $licenses | Out-Null
 Copy-Item (Join-Path $repo 'LICENSE') $licenses
 Copy-Item (Join-Path $repo 'NOTICE') $licenses
+Copy-Item (Join-Path $cyberpunk 'licenses\*') $licenses
 
 if ($Converter) {
     $converter_dir = Join-Path $plugin_dir 'converter'

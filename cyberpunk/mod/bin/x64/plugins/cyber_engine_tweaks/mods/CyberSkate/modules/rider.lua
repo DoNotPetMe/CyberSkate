@@ -337,13 +337,15 @@ function Rider.update(dt)
     local notice = Native.notice()
     if notice ~= "" then
         print("[CyberSkate] " .. notice)
+        Rider.message = notice
     end
     local f = Native.frame()
     if #f < Native.FRAME_LEN then
         if Rider.state == "entering" then
             enterClock = enterClock + dt
             if enterClock > ENTER_TIMEOUT then
-                Rider.exit("Skate 3 did not start: " .. tostring(Native.status()))
+                local why = Rider.message ~= "" and Rider.message or tostring(Native.status())
+                Rider.exit("Skate 3 did not start: " .. why)
             end
         end
         return

@@ -11,6 +11,13 @@ IW4L is licensed under the Apache License, Version 2.0; see LICENSE.
 skating and a Minecraft world to it.
 https://github.com/chasmlol/2010-rust-rewrite-mashup
 
+CyberSkate is a fork of the 2010 Rust Rewrite Mashup that hosts its Skate 3
+engine inside Cyberpunk 2077 (cyberpunk/). Its plugin is built with
+red4ext-rs (https://github.com/jac3km4/red4ext-rs, MIT), which compiles in
+the RED4ext SDK (https://github.com/WopsS/RED4ext.SDK, MIT); the mod runs on
+Cyber Engine Tweaks and RED4ext, which players install themselves. No
+Cyberpunk 2077 or Skate 3 code or data is included.
+
 --------------------------------------------------------------------------------
 Third-party material bundled with this repository
 --------------------------------------------------------------------------------

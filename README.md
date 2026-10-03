@@ -1,3 +1,14 @@
+# CyberSkate
+
+**Skate 3 in Cyberpunk 2077.** A fork of the 2010 Rust Rewrite Mashup that
+takes its Skate 3 engine into Night City: a RED4ext plugin runs Skate 3's
+physics, tricks and grinds, and a Cyber Engine Tweaks mod scans the city
+around you into skateable ground, curbs, ledges and rails. Bring your own
+extracted Skate 3 (`default.xex` with its `data` folder) and a controller.
+Setup, controls and how it works: [docs/CYBERPUNK.md](docs/CYBERPUNK.md).
+
+Everything below is the mashup it is forked from, unchanged.
+
 # 2010 Rust Rewrite Mashup
 
 Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
