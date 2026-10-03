@@ -34,11 +34,14 @@ impl<'a> Glb<'a> {
             return Err("not a GLB file".into());
         }
         let json_len = word(12)?;
-        let json = serde_json::from_slice(bytes.get(20..20 + json_len).ok_or("truncated GLB JSON")?)
-            .map_err(|e| e.to_string())?;
+        let json =
+            serde_json::from_slice(bytes.get(20..20 + json_len).ok_or("truncated GLB JSON")?)
+                .map_err(|e| e.to_string())?;
         let blob_len = word(20 + json_len)?;
         let start = 28 + json_len;
-        let blob = bytes.get(start..start + blob_len).ok_or("truncated GLB binary")?;
+        let blob = bytes
+            .get(start..start + blob_len)
+            .ok_or("truncated GLB binary")?;
         Ok(Self { json, blob })
     }
 
@@ -46,7 +49,10 @@ impl<'a> Glb<'a> {
         let view = &self.json["bufferViews"][view];
         let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
         let length = index(&view["byteLength"])?;
-        let bytes = self.blob.get(offset..offset + length).ok_or("buffer view outside the GLB")?;
+        let bytes = self
+            .blob
+            .get(offset..offset + length)
+            .ok_or("buffer view outside the GLB")?;
         Ok((bytes, view["byteStride"].as_u64().map(|s| s as usize)))
     }
 
@@ -64,8 +70,12 @@ impl<'a> Glb<'a> {
         let (size, read): (usize, fn(&[u8]) -> f64) = match a["componentType"].as_u64() {
             Some(5121) => (1, |b| f64::from(b[0])),
             Some(5123) => (2, |b| f64::from(u16::from_le_bytes([b[0], b[1]]))),
-            Some(5125) => (4, |b| f64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))),
-            Some(5126) => (4, |b| f64::from(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))),
+            Some(5125) => (4, |b| {
+                f64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            }),
+            Some(5126) => (4, |b| {
+                f64::from(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            }),
             other => return Err(format!("unsupported component type {other:?}")),
         };
         let (bytes, stride) = self.view(index(&a["bufferView"])?)?;
@@ -75,7 +85,11 @@ impl<'a> Glb<'a> {
         for e in 0..count {
             for c in 0..width {
                 let at = start + e * stride + c * size;
-                out.push(read(bytes.get(at..at + size).ok_or("accessor outside its view")?));
+                out.push(read(
+                    bytes
+                        .get(at..at + size)
+                        .ok_or("accessor outside its view")?,
+                ));
             }
         }
         Ok(out)
@@ -97,7 +111,11 @@ fn to_board(inverse_bind: &[f64], v: [f64; 3], w: f64) -> [f32; 3] {
     let [x, y, z] = apply(inverse_bind, v, w);
     let native = [x, -z, y];
     let cyberpunk = [-native[0], native[2], native[1]];
-    [cyberpunk[0] as f32, cyberpunk[2] as f32, -cyberpunk[1] as f32]
+    [
+        cyberpunk[0] as f32,
+        cyberpunk[2] as f32,
+        -cyberpunk[1] as f32,
+    ]
 }
 
 struct Part {
@@ -114,7 +132,9 @@ pub fn export(skater: &[u8]) -> Result<(Vec<u8>, String), String> {
     let skin = &glb.json["skins"][0];
     let joints = skin["joints"].as_array().ok_or("skater has no skin")?;
     let inverse_binds = glb.components(index(&skin["inverseBindMatrices"])?)?;
-    let primitives = glb.json["meshes"][0]["primitives"].as_array().ok_or("skater has no mesh")?;
+    let primitives = glb.json["meshes"][0]["primitives"]
+        .as_array()
+        .ok_or("skater has no mesh")?;
     let board: Vec<&Value> = primitives
         .iter()
         .filter(|p| {
@@ -160,15 +180,46 @@ pub fn export(skater: &[u8]) -> Result<(Vec<u8>, String), String> {
             n.map(|v| v / l)
         };
         parts.push(Part {
-            positions: pos.chunks(3).map(|c| to_board(inverse_bind, [c[0], c[1], c[2]], 1.)).collect(),
+            positions: pos
+                .chunks(3)
+                .map(|c| to_board(inverse_bind, [c[0], c[1], c[2]], 1.))
+                .collect(),
             normals: nrm.chunks(3).map(normal).collect(),
             uvs: uv.chunks(2).map(|c| [c[0] as f32, c[1] as f32]).collect(),
-            indices: glb.components(index(&p["indices"])?)?.iter().map(|&i| i as u32).collect(),
+            indices: glb
+                .components(index(&p["indices"])?)?
+                .iter()
+                .map(|&i| i as u32)
+                .collect(),
             image,
             name: material["name"].as_str().unwrap_or("board").to_owned(),
         });
     }
+    upright(&mut parts);
     Ok((write(&glb, &parts)?, deck_name))
+}
+
+/// The deck bone's up may point through the grip tape or through the
+/// wheels depending on how the rig was authored; the trucks and wheels must
+/// hang below the deck, so if they sit above it the board is turned half a
+/// turn about its nose (glTF y is up, z is the nose).
+fn upright(parts: &mut [Part]) {
+    let mean_height =
+        |p: &Part| p.positions.iter().map(|v| v[1]).sum::<f32>() / p.positions.len().max(1) as f32;
+    let (deck, rest): (Vec<&Part>, Vec<&Part>) =
+        parts.iter().partition(|p| p.name.contains("Board"));
+    let (Some(deck), false) = (deck.first(), rest.is_empty()) else {
+        return;
+    };
+    let below = rest.iter().map(|p| mean_height(p)).sum::<f32>() / rest.len() as f32;
+    if below > mean_height(deck) {
+        for part in parts.iter_mut() {
+            for v in part.positions.iter_mut().chain(part.normals.iter_mut()) {
+                v[0] = -v[0];
+                v[1] = -v[1];
+            }
+        }
+    }
 }
 
 fn write(source: &Glb<'_>, parts: &[Part]) -> Result<Vec<u8>, String> {
@@ -205,9 +256,15 @@ fn write(source: &Glb<'_>, parts: &[Part]) -> Result<Vec<u8>, String> {
             "pbrMetallicRoughness": {"baseColorTexture": {"index": image}, "metallicFactor": 0.0, "roughnessFactor": 0.8}
         }));
         let flat = |v: &[[f32; 3]]| v.iter().flatten().copied().collect::<Vec<f32>>();
-        let (lo, hi) = part.positions.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| {
-            (std::array::from_fn(|i| lo[i].min(p[i])), std::array::from_fn(|i| hi[i].max(p[i])))
-        });
+        let (lo, hi) = part
+            .positions
+            .iter()
+            .fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| {
+                (
+                    std::array::from_fn(|i| lo[i].min(p[i])),
+                    std::array::from_fn(|i| hi[i].max(p[i])),
+                )
+            });
         let pv = push(floats(&flat(&part.positions)), &mut blob);
         accessors.push(json!({"bufferView": pv, "componentType": 5126, "count": part.positions.len(), "type": "VEC3", "min": lo, "max": hi}));
         let nv = push(floats(&flat(&part.normals)), &mut blob);
@@ -215,7 +272,10 @@ fn write(source: &Glb<'_>, parts: &[Part]) -> Result<Vec<u8>, String> {
         let uv_flat: Vec<f32> = part.uvs.iter().flatten().copied().collect();
         let uvv = push(floats(&uv_flat), &mut blob);
         accessors.push(json!({"bufferView": uvv, "componentType": 5126, "count": part.uvs.len(), "type": "VEC2"}));
-        let iv = push(part.indices.iter().flat_map(|i| i.to_le_bytes()).collect(), &mut blob);
+        let iv = push(
+            part.indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
+            &mut blob,
+        );
         accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": part.indices.len(), "type": "SCALAR"}));
         let base = accessors.len() - 4;
         prims.push(json!({
@@ -286,6 +346,28 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wheels_end_up_under_the_deck() {
+        let part = |name: &str, y: f32| Part {
+            positions: vec![[0.1, y, 0.4], [-0.1, y, -0.4]],
+            normals: vec![[0., 1., 0.]; 2],
+            uvs: vec![[0., 0.]; 2],
+            indices: vec![],
+            image: 0,
+            name: name.into(),
+        };
+        let mut parts = vec![
+            part("Retail_SkateBoard", 0.),
+            part("Retail_SkateWheel", 0.06),
+        ];
+        upright(&mut parts);
+        assert!(parts[1].positions[0][1] < parts[0].positions[0][1]);
+        assert_eq!(parts[0].normals[0], [0., -1., 0.]);
+        assert_eq!(parts[1].positions[0], [-0.1, -0.06, 0.4]);
+        upright(&mut parts);
+        assert!(parts[1].positions[0][1] < 0.);
+    }
+
     /// A skater with one board quad skinned to bone 1 (bind at y = 2) and
     /// one body triangle on bone 0, through `write` and back.
     #[test]
@@ -310,11 +392,17 @@ mod tests {
         let normals = put(f(&[0., 1., 0., 0., 1., 0., 0., 1., 0., 0., 1., 0.]));
         let uvs = put(f(&[0.; 8]));
         let joints = put(vec![1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
-        let weights = put(f(&[1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0.]));
-        let idx = put([0u32, 1, 2, 0, 2, 3].iter().flat_map(|i| i.to_le_bytes()).collect());
+        let weights = put(f(&[
+            1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0.,
+        ]));
+        let idx = put([0u32, 1, 2, 0, 2, 3]
+            .iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect());
         let png = put(b"\x89PNG fake".to_vec());
         let acc = |view: usize, count: usize, ty: &str, ct: u32| json!({"bufferView": view, "count": count, "type": ty, "componentType": ct});
-        let attrs = json!({"POSITION": 1, "NORMAL": 2, "TEXCOORD_0": 3, "JOINTS_0": 4, "WEIGHTS_0": 5});
+        let attrs =
+            json!({"POSITION": 1, "NORMAL": 2, "TEXCOORD_0": 3, "JOINTS_0": 4, "WEIGHTS_0": 5});
         let doc = json!({
             "skins": [{"joints": [0, 1], "inverseBindMatrices": 0}],
             "nodes": [{"name": "body"}, {"name": "deck"}],
@@ -328,7 +416,10 @@ mod tests {
             "images": [{"bufferView": png, "mimeType": "image/png"}],
             "bufferViews": views,
         });
-        let source = Glb { json: doc, blob: &blob };
+        let source = Glb {
+            json: doc,
+            blob: &blob,
+        };
         let mut bytes = Vec::new();
         let text = serde_json::to_vec(&source.json).unwrap();
         bytes.extend(b"glTF");
@@ -344,13 +435,29 @@ mod tests {
         let (out, deck) = export(&bytes).unwrap();
         assert_eq!(deck, "deck");
         let back = Glb::parse(&out).unwrap();
-        assert_eq!(back.json["meshes"][0]["primitives"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            back.json["meshes"][0]["primitives"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         let positions = back.components(0).unwrap();
         // The quad sat at y = 2 in the bind pose; in the deck frame it is at
         // the origin, every point finite, and the PNG travelled unchanged.
-        assert!(positions.iter().all(|v| v.is_finite() && v.abs() <= 1. + 1e-6));
-        assert!(positions.chunks(3).any(|p| p.iter().all(|v| v.abs() < 1e-6)));
-        let (png_out, _) = back.view(index(&back.json["images"][0]["bufferView"]).unwrap()).unwrap();
+        assert!(
+            positions
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= 1. + 1e-6)
+        );
+        assert!(
+            positions
+                .chunks(3)
+                .any(|p| p.iter().all(|v| v.abs() < 1e-6))
+        );
+        let (png_out, _) = back
+            .view(index(&back.json["images"][0]["bufferView"]).unwrap())
+            .unwrap();
         assert_eq!(png_out, b"\x89PNG fake");
     }
 }
