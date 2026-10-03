@@ -50,6 +50,15 @@ jobs:
         env:
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
         run: cargo build --release -p cyberskate-red4ext
+      - name: Check the plugin's RED4ext entry points
+        shell: pwsh
+        run: |
+          $exports = & 'C:\Program Files\LLVM\bin\llvm-readobj.exe' --coff-exports cyberpunk/target/release/CyberSkate.dll
+          foreach ($symbol in 'Query', 'Main', 'Supports') {
+            if (-not ($exports -match "Name: $symbol$")) { throw "CyberSkate.dll does not export $symbol" }
+          }
+          ($exports -match 'Name: ') -join "`n"
+          (Get-Item cyberpunk/target/release/CyberSkate.dll).Length
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -66,18 +75,15 @@ jobs:
           python -m pip install -r (Join-Path $engine 'tools\requirements-setup.txt')
           $out = Join-Path $env:RUNNER_TEMP 'converter'
           ./skate/converter/build.ps1 -SkateEngine $engine -Out $out
-          $site = python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"
-          $licenses = @(
-            (Join-Path (Split-Path (Get-Command python).Source) 'LICENSE.txt')
-            (Get-ChildItem "$site\numpy-*.dist-info" -Recurse -File -Filter 'LICENSE*' | Select-Object -First 1).FullName
-            (Get-ChildItem "$site\pillow-*.dist-info" -Recurse -File -Filter 'LICENSE*' | Select-Object -First 1).FullName
-          ) + (Get-ChildItem (Join-Path $engine 'tools\vendor') -Recurse -File -Filter 'LICENSE*').FullName
+          # The converter bundles Python, NumPy, Pillow and the engine's vendored tools.
           $staged = Join-Path $env:RUNNER_TEMP 'converter-licenses'
           New-Item -ItemType Directory -Force $staged | Out-Null
-          foreach ($license in $licenses | Where-Object { $_ }) {
-            $name = (Split-Path (Split-Path $license -Parent) -Leaf) + '-' + (Split-Path $license -Leaf)
-            Copy-Item $license (Join-Path $staged $name)
+          Copy-Item (Join-Path $env:pythonLocation 'LICENSE.txt') (Join-Path $staged 'Python-LICENSE.txt')
+          python -c "import importlib.metadata as m, pathlib, shutil, sys; out = pathlib.Path(sys.argv[1]); [shutil.copy(f.locate(), out / str(f).replace('/', '_')) for name in ('numpy', 'pillow') for f in m.distribution(name).files if f.name.upper().startswith(('LICENSE', 'COPYING'))]" $staged
+          foreach ($license in Get-ChildItem (Join-Path $engine 'tools\vendor') -Recurse -File -Filter 'LICENSE*') {
+            Copy-Item $license.FullName (Join-Path $staged ($license.Directory.Name + '-' + $license.Name))
           }
+          Get-ChildItem $staged | ForEach-Object Name
           "exe=$out\iw4l-skate-convert.exe" >> $env:GITHUB_OUTPUT
           "licenses=$staged" >> $env:GITHUB_OUTPUT
       - name: Package
